@@ -1,3 +1,4 @@
+import { parseVariantMarker } from './template-derive/variantMarkers';
 /**
  * Markdown AST to Pandoc-like dict adapter.
  * Markdown token adapter built on top of marked.
@@ -162,6 +163,45 @@ const OBSIDIAN_MARKED = new Marked({ gfm: true, breaks: false })
 // MarkoToPandocAdapter
 // ============================================================
 
+function reportLiteralEmphasis(blocks: PandocBlock[], report: ConversionReportCollector): void {
+    const scan = (inlines: PandocInline[]): void => {
+        let text = '';
+        const flush = (): void => {
+            for (const match of text.matchAll(/\*\*(.+?)\*\*|__(.+?)__/g)) {
+                const start = match.index;
+                const end = start + match[0].length;
+                if (match[2] !== undefined && /[A-Za-z0-9]/.test(text[start - 1] ?? '') && /[A-Za-z0-9]/.test(text[end] ?? '')) continue;
+                const from = Math.max(0, start - 20);
+                report.add('emphasis_literal', '강조 기호로 보이는 글자가 굵게·기울임으로 바뀌지 않고 남음', text.slice(from, from + 80));
+            }
+            text = '';
+        };
+        const visit = (items: PandocInline[]): void => {
+            for (const item of items) {
+                switch (item.t) {
+                    case 'Str': text += item.c; break;
+                    case 'Space': text += ' '; break;
+                    case 'Emph': case 'Strong': case 'Strikeout': case 'Underline': case 'Superscript': case 'Subscript': case 'SmallCaps': visit(item.c); break;
+                    case 'Link': case 'Span': case 'Quoted': visit(item.c[1]); break;
+                    case 'Note': flush(); walk(item.c); break;
+                    default: flush();
+                }
+            }
+        };
+        visit(inlines); flush();
+    };
+    const walk = (value: unknown): void => {
+        if (Array.isArray(value)) { value.forEach(walk); return; }
+        if (!value || typeof value !== 'object') return;
+        const node = value as PandocBlock;
+        if (node.t === 'Para' || node.t === 'Plain') { scan(node.c); return; }
+        if (node.t === 'Header') { scan(node.c[2]); return; }
+        if (node.t === 'CodeBlock' || node.t === 'RawBlock') return;
+        if ('c' in node) walk(node.c);
+    };
+    walk(blocks);
+}
+
 export class MarkoToPandocAdapter {
     // Regex to match extended headers (7-9 levels)
     private static readonly EXTENDED_HEADER_RE = /^(#{7,9})\s+(.+)$/;
@@ -273,7 +313,7 @@ export class MarkoToPandocAdapter {
         this.report = new ConversionReportCollector();
 
         // Preprocess extended headers
-        const processedText = this.preprocessExtendedHeaders(markdownText);
+        const processedText = this.preprocessExtendedHeaders(splitInlineDirectives(markdownText));
 
         // Use marked lexer with GFM enabled (plus Obsidian highlight/footnotes)
         const tokens = OBSIDIAN_MARKED.lexer(processedText);
@@ -311,6 +351,7 @@ export class MarkoToPandocAdapter {
             }
         }
         applyStyleDirectives(blocks);
+        reportLiteralEmphasis(blocks, this.report);
 
         return {
             'pandoc-api-version': [1, 23, 1],
@@ -575,7 +616,7 @@ export class MarkoToPandocAdapter {
             : [{ t: 'Str', c: type.charAt(0).toUpperCase() + type.slice(1) }];
 
         const body: PandocBlock[] = [
-            { t: 'Div', c: [['', ['callout-title'], []], [{ t: 'Plain', c: title }]] },
+            { t: 'Div', c: [['', ['callout-title'], [['title-origin', titleInlines.length > 0 ? 'explicit' : 'default_type']]], [{ t: 'Plain', c: title }]] },
             ...(bodyInlines.length > 0 ? [{ t: 'Para', c: bodyInlines } as PandocBlock] : []),
             ...blocks.slice(1),
         ];
@@ -650,40 +691,56 @@ export class MarkoToPandocAdapter {
 
     /**
      * Converts a table cell's inner HTML into Pandoc blocks, keeping any nested
-     * <table> as a real nested Table block instead of flattening it into the
-     * surrounding table. Text before/after a nested table becomes Plain blocks.
+     * <table> as a real nested Table block and explicit HTML paragraphs as
+     * separate Para blocks. Unwrapped text becomes Plain blocks.
      */
     private convertHtmlCellBlocks(html: string): PandocBlock[] {
         const blocks: PandocBlock[] = [];
         let textBuf = '';
         const flushText = () => {
             if (textBuf.trim()) {
-                blocks.push({ t: 'Plain', c: this.convertHtmlInlineFragment(textBuf) });
+                const inlines = this.convertHtmlInlineFragment(textBuf);
+                if (inlines.length) blocks.push({ t: 'Plain', c: inlines });
             }
             textBuf = '';
         };
 
         let i = 0;
-        const tablePattern = /<table\b/gi;
+        // Consume other tags and comments as whole tokens so a literal "<p>"
+        // inside an attribute or comment cannot create a paragraph boundary.
+        const blockPattern = /<!--[\s\S]*?-->|<\s*(table|p)\b(?:"[^"]*"|'[^']*'|[^'">])*>|<(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
         while (i < html.length) {
-            tablePattern.lastIndex = i;
-            const match = tablePattern.exec(html);
+            blockPattern.lastIndex = i;
+            const match = blockPattern.exec(html);
             if (!match) {
                 textBuf += html.slice(i);
                 break;
             }
             textBuf += html.slice(i, match.index);
-            const openEnd = html.indexOf('>', match.index) + 1;
-            if (openEnd <= 0) {
-                textBuf += html.slice(match.index);
-                break;
+            if (!match[1]) {
+                textBuf += match[0];
+                i = blockPattern.lastIndex;
+                continue;
             }
-            const balanced = this.findBalancedTableEnd(html, openEnd);
-            const nestedTableHtml = html.slice(match.index, balanced.afterClose);
+            const openEnd = blockPattern.lastIndex;
             flushText();
-            const nested = this.convertHtmlTable(nestedTableHtml);
-            if (nested) blocks.push(nested);
-            i = balanced.afterClose;
+            if (match[1].toLowerCase() === 'table') {
+                const balanced = this.findBalancedTableEnd(html, openEnd);
+                const nested = this.convertHtmlTable(html.slice(match.index, balanced.afterClose));
+                if (nested) blocks.push(nested);
+                i = balanced.afterClose;
+            } else {
+                if (/\/\s*>$/.test(match[0])) {
+                    blocks.push({ t: 'Para', c: [] });
+                    i = openEnd;
+                    continue;
+                }
+                const close = this.findParagraphClose(html, openEnd);
+                const contents = html.slice(openEnd, close.innerEnd);
+                const children = this.convertHtmlCellBlocks(contents);
+                blocks.push(...children.map((block) => block.t === 'Plain' ? { t: 'Para' as const, c: block.c } : block));
+                i = close.afterClose;
+            }
         }
         flushText();
 
@@ -691,6 +748,26 @@ export class MarkoToPandocAdapter {
             blocks.push({ t: 'Plain', c: this.convertHtmlInlineFragment(html) });
         }
         return blocks;
+    }
+
+    /** Finds a paragraph close without treating markup in comments/attributes as tags. */
+    private findParagraphClose(html: string, from: number): { innerEnd: number; afterClose: number } {
+        const pattern = /<!--[\s\S]*?-->|<\s*(\/?)\s*(p|table)\b(?:"[^"]*"|'[^']*'|[^'">])*>|<(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+        pattern.lastIndex = from;
+        let depth = 1;
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(html))) {
+            if (!match[2]) continue;
+            const tag = match[2].toLowerCase();
+            if (tag === 'table') {
+                if (!match[1]) pattern.lastIndex = this.findBalancedTableEnd(html, pattern.lastIndex).afterClose;
+            } else if (match[1]) {
+                if (--depth === 0) return { innerEnd: match.index, afterClose: pattern.lastIndex };
+            } else if (!/\/\s*>$/.test(match[0])) {
+                depth++;
+            }
+        }
+        return { innerEnd: html.length, afterClose: html.length };
     }
 
     /** Extracts the direct-child rows of a table, resolving thead/tbody/tfoot. */
@@ -850,7 +927,7 @@ export class MarkoToPandocAdapter {
             }
         };
 
-        const tokenPattern = /<!--[\s\S]*?-->|<[^>]+>|[^<]+/g;
+        const tokenPattern = /<!--[\s\S]*?-->|<(?:(?:"[^"]*")|(?:'[^']*')|[^'">])*>|[^<]+/g;
         for (const match of html.matchAll(tokenPattern)) {
             const part = match[0];
             if (part.startsWith('<!--')) continue;
@@ -874,18 +951,26 @@ export class MarkoToPandocAdapter {
                 continue;
             }
 
-            const openMatch = part.match(/^<\s*([\w-]+)\b([^>]*)>/);
+            const openMatch = part.match(/^<\s*([\w-]+)\b([\s\S]*?)\/?>$/);
             if (!openMatch) continue;
             const tag = openMatch[1].toLowerCase();
             if (tag === 'br') {
                 append({ t: 'LineBreak' });
                 continue;
             }
+            if (tag === 'img') {
+                const attrs = this.parseHtmlAttributes(openMatch[2] ?? '');
+                const src = decodeHtmlText(attrs.src ?? '');
+                const alt = decodeHtmlText(attrs.alt ?? '');
+                const title = decodeHtmlText(attrs.title ?? '');
+                append({ t: 'Image', c: [['', [], []] as PandocAttr, this.convertRawText(alt), [src, title]] });
+                continue;
+            }
             if (['p', 'div', 'li'].includes(tag)) {
                 appendBreak();
                 continue;
             }
-            if (['strong', 'b', 'em', 'i', 'del', 's', 'strike', 'code', 'a'].includes(tag)) {
+            if (['strong', 'b', 'em', 'i', 'del', 's', 'strike', 'code', 'a', 'sup', 'sub'].includes(tag)) {
                 const attrs = this.parseHtmlAttributes(openMatch[2] ?? '');
                 stack.push({ tag, inlines: [], href: decodeHtmlText(attrs.href ?? '') });
             }
@@ -905,6 +990,8 @@ export class MarkoToPandocAdapter {
         if (frame.inlines.length === 0) return null;
         if (frame.tag === 'strong' || frame.tag === 'b') return { t: 'Strong', c: frame.inlines };
         if (frame.tag === 'em' || frame.tag === 'i') return { t: 'Emph', c: frame.inlines };
+        if (frame.tag === 'sup') return { t: 'Superscript', c: frame.inlines };
+        if (frame.tag === 'sub') return { t: 'Subscript', c: frame.inlines };
         if (['del', 's', 'strike'].includes(frame.tag)) return { t: 'Strikeout', c: frame.inlines };
         if (frame.tag === 'code') {
             return { t: 'Code', c: [['', [], []] as PandocAttr, inlineText(frame.inlines)] };
@@ -921,13 +1008,33 @@ export class MarkoToPandocAdapter {
 
     private convertInlineTokens(tokens: MarkedToken[]): PandocInline[] {
         const result: PandocInline[] = [];
+        const frames: Array<{ tag: 'sup' | 'sub'; inlines: PandocInline[] }> = [];
         for (const token of tokens) {
+            const html = token.type === 'html' ? (token.raw ?? token.text ?? '').trim() : '';
+            const tag = /^(<\/?)(sup|sub)(?:\s+(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*>$/i.exec(html);
+            if (tag && (tag[1] === '<' ? !/\/\s*>$/.test(html) : /^<\/(?:sup|sub)\s*>$/i.test(html))) {
+                const name = tag[2].toLowerCase() as 'sup' | 'sub';
+                if (tag[1] === '<') {
+                    frames.push({ tag: name, inlines: [] });
+                } else if (frames.at(-1)?.tag === name) {
+                    const frame = frames.pop()!;
+                    const inline: PandocInline = frame.tag === 'sup'
+                        ? { t: 'Superscript', c: frame.inlines }
+                        : { t: 'Subscript', c: frame.inlines };
+                    (frames.at(-1)?.inlines ?? result).push(inline);
+                }
+                continue;
+            }
             const inlines = this.convertInline(token);
             if (Array.isArray(inlines)) {
-                result.push(...inlines);
+                (frames.at(-1)?.inlines ?? result).push(...inlines);
             } else if (inlines !== null) {
-                result.push(inlines);
+                (frames.at(-1)?.inlines ?? result).push(inlines);
             }
+        }
+        while (frames.length) {
+            const frame = frames.pop()!;
+            (frames.at(-1)?.inlines ?? result).push(...frame.inlines);
         }
         return result;
     }
@@ -1068,11 +1175,11 @@ function decodeHtmlText(text: string): string {
     return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, body: string) => {
         if (body.startsWith('#x') || body.startsWith('#X')) {
             const codePoint = Number.parseInt(body.slice(2), 16);
-            return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : entity;
+            return Number.isInteger(codePoint) && codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : entity;
         }
         if (body.startsWith('#')) {
             const codePoint = Number.parseInt(body.slice(1), 10);
-            return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : entity;
+            return Number.isInteger(codePoint) && codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : entity;
         }
         return named[body.toLowerCase()] ?? entity;
     });
@@ -1088,6 +1195,8 @@ function inlineText(inlines: PandocInline[]): string {
             case 'Strong':
             case 'Emph':
             case 'Underline':
+            case 'Superscript':
+            case 'Subscript':
             case 'Strikeout': return inlineText(inline.c);
             case 'Code': return inline.c[1];
             case 'Link': return inlineText(inline.c[1]);
@@ -1106,18 +1215,71 @@ function trimInlineSpaces(inlines: PandocInline[]): PandocInline[] {
     return inlines.slice(start, end);
 }
 
-const STYLE_DIRECTIVE = /^<!--\s*hwpx:style\s*=\s*([^\s>]+?)\s*-->\s*$/;
+const STYLE_DIRECTIVE = /^<!--\s*hwpx:style\s*=\s*([^\s>]+?)(?:\s+(?:(?!-->)[\s\S])*)?-->\s*$/;
+const SHORT_STYLE_DIRECTIVE = /^<!--\s*hwpx:([^\s>]+?)(?:\s+(?:(?!-->)[\s\S])*)?-->\s*$/;
+
+/** Split valid leading directives before marked groups HTML and Markdown blocks. */
+export function splitInlineDirectives(markdown: string): string {
+    let fence: { char: string; length: number } | null = null;
+    let inComment = false;
+    let lastEnding = '\n';
+    return (markdown.match(/[^\r\n]*(?:\r\n|\n|\r|$)/g) ?? []).map(part => {
+        if (!part) return part;
+        const ending = /(?:\r\n|\n|\r)$/.exec(part)?.[0] ?? '';
+        const line = ending ? part.slice(0, -ending.length) : part;
+        if (ending) lastEnding = ending;
+        if (!inComment) {
+            if (/^(?: {4}|\t)/.test(line)) return part;
+            const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+            if (fence) {
+                if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && /^\s*$/.test(marker[2])) fence = null;
+                return part;
+            }
+            if (marker && (marker[1][0] !== '`' || !marker[2].includes('`'))) {
+                fence = { char: marker[1][0], length: marker[1].length };
+                return part;
+            }
+        }
+        const wasInComment = inComment;
+        let pos = 0;
+        while (pos < line.length) {
+            const index = line.indexOf(inComment ? '-->' : '<!--', pos);
+            if (index < 0) break;
+            pos = index + (inComment ? 3 : 4);
+            inComment = !inComment;
+        }
+        if (wasInComment || inComment) return part;
+        const indent = /^( {0,3})/.exec(line)![1];
+        let rest = line.slice(indent.length);
+        const pieces: string[] = [];
+        while (true) {
+            const match = /^<!--[ \t]*hwpx:(?:style[ \t]*=[ \t]*)?([^\s>]+)(?:[ \t]+(?:(?!-->).)*)?-->/.exec(rest);
+            if (!match || !parseVariantMarker(`BODY:${match[1]}`)) break;
+            const remaining = rest.slice(match[0].length).replace(/^[ \t]+/, '');
+            if (!remaining.trim()) break;
+            pieces.push(indent + match[0]);
+            rest = remaining;
+        }
+        return pieces.length ? [...pieces, indent + rest].join(ending || lastEnding) + ending : part;
+    }).join('');
+}
 
 /**
  * `<!-- hwpx:style=요약 -->` before a block picks the template variant `{{BODY:요약}}`
  * (`{{H2:요약}}` …) for it: the directive is removed and the next block is wrapped
  * in a Div with class `hwpx-style` (plan 3.6).
+ * Whitespace after the name starts an ignored description; only the name is captured.
  */
 function applyStyleDirectives(blocks: PandocBlock[]): void {
     for (let index = 0; index < blocks.length; index++) {
         const block = blocks[index];
-        const match = block.t === 'RawBlock' && block.c[0] === 'html' ? STYLE_DIRECTIVE.exec(block.c[1].trim()) : null;
+        const source = block.t === 'RawBlock' && block.c[0] === 'html' ? block.c[1].trim() : null;
+        const explicit = source !== null && /^<!--\s*hwpx:style\s*=/.test(source);
+        const match = source === null ? null : (explicit ? STYLE_DIRECTIVE : SHORT_STYLE_DIRECTIVE).exec(source);
         if (!match) continue;
+        // Preserve legacy explicit requests even when their names cannot be
+        // exposed in observations: they must be redacted, not reported as absent.
+        if (!explicit && !parseVariantMarker(`BODY:${match[1]}`)) continue;
         const next = blocks[index + 1];
         if (next) {
             blocks.splice(index, 2, { t: 'Div', c: [['', ['hwpx-style'], [['style', match[1]]]], [next]] });

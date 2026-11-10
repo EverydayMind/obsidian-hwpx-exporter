@@ -97,6 +97,9 @@ export async function captureRenderableBlocks(
     const assets = new Map<string, CapturedAsset>();
     const replacements: { block: RenderableBlock; syntheticPath: string | null }[] = [];
     const failures: { hint: string; message: string }[] = [];
+    for (const block of blocks.slice(limited.length)) {
+        failures.push({ hint: block.hint, message: 'capture block limit reached' });
+    }
     const nonce = createNonce();
     const budget: CaptureBudget = {
         pixels: 0,
@@ -110,8 +113,12 @@ export async function captureRenderableBlocks(
         budget.startedAt = performance.now();
         const themeGuard = options.forceLightThemeAggressive ? installBodyThemeGuard() : null;
         try {
-            for (const block of limited) {
-                if (performance.now() - budget.startedAt >= options.captureTotalTimeoutMs) break;
+            for (let index = 0; index < limited.length; index++) {
+                const block = limited[index];
+                if (performance.now() - budget.startedAt >= options.captureTotalTimeoutMs) {
+                    for (const skipped of limited.slice(index)) failures.push({ hint: skipped.hint, message: 'capture total timeout reached' });
+                    break;
+                }
                 const syntheticPath = `hwpx-render-${nonce}-${String(sequence + 1).padStart(3, '0')}.png`;
                 try {
                     if (block.kind === 'code-block') {

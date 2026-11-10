@@ -3,6 +3,7 @@ node_modules/
 
 # Generated release asset (published through GitHub Releases only)
 /main.js
+/build-info.json
 *.map
 
 # Local Obsidian data

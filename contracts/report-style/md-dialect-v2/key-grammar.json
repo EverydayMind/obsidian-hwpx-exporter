@@ -1,0 +1,396 @@
+{
+  "name": {
+    "pattern": "^(?!(?:fixed|omitted|style|decomposition|meta)$)[\\p{L}\\p{N}_]{1,12}$(?![\\s\\S])",
+    "flags": "u",
+    "reserved": [
+      "fixed",
+      "omitted",
+      "style",
+      "decomposition",
+      "meta"
+    ],
+    "maxCodePoints": 12
+  },
+  "applicationKey": {
+    "pattern": "^(?:H[1-6]|BODY)(?::(?!(?:fixed|omitted|style|decomposition|meta)$)[\\p{L}\\p{N}_]{1,12})?$(?![\\s\\S])",
+    "flags": "u"
+  },
+  "space": {
+    "grammar": "Legacy names (1?16 characters excluding braces, angle brackets, CR/LF, colon and slash), plus H1?H9/BODY slash variants; TABLE and all legacy names remain accepted.",
+    "variantSeparator": "/",
+    "previousSpecial": [
+      "START",
+      "TABLE",
+      "LIST",
+      "CODE",
+      "QUOTE",
+      "HR",
+      "DIV",
+      "DEFAULT"
+    ],
+    "currentSpecial": [
+      "TABLE"
+    ],
+    "keyPattern": "^(?:[^{}<>\\r\\n:/]{1,16}|(?:H[1-9]|BODY)(?:/(?!(?:fixed|omitted|style|decomposition|meta)$)[\\p{L}\\p{N}_]{1,12}))$(?![\\s\\S])"
+  },
+  "keyVectors": [
+    {
+      "input": "H1",
+      "valid": true
+    },
+    {
+      "input": "H6",
+      "valid": true
+    },
+    {
+      "input": "BODY",
+      "valid": true
+    },
+    {
+      "input": "H4:주석",
+      "valid": true
+    },
+    {
+      "input": "H3:번호_매기기_제목",
+      "valid": true
+    },
+    {
+      "input": "BODY:깊은단계",
+      "valid": true
+    },
+    {
+      "input": "H4:기호2",
+      "valid": true
+    },
+    {
+      "input": "BODY:기호99",
+      "valid": true
+    },
+    {
+      "input": "BODY:가나다라마바사아자차카타",
+      "valid": true
+    },
+    {
+      "input": "H2:A_1",
+      "valid": true
+    },
+    {
+      "input": "H2:𐐀",
+      "valid": true
+    },
+    {
+      "input": "H0",
+      "valid": false
+    },
+    {
+      "input": "H7",
+      "valid": false
+    },
+    {
+      "input": "H9",
+      "valid": false
+    },
+    {
+      "input": "H01",
+      "valid": false
+    },
+    {
+      "input": "h2",
+      "valid": false
+    },
+    {
+      "input": "BODY:",
+      "valid": false
+    },
+    {
+      "input": "H2:공백 이름",
+      "valid": false
+    },
+    {
+      "input": "H2:a-b",
+      "valid": false
+    },
+    {
+      "input": "H2:a/b",
+      "valid": false
+    },
+    {
+      "input": " H2",
+      "valid": false
+    },
+    {
+      "input": "H2 ",
+      "valid": false
+    },
+    {
+      "input": "H2:가나다라마바사아자차카타파",
+      "valid": false
+    },
+    {
+      "input": "H2:😀",
+      "valid": false
+    },
+    {
+      "input": "H2:이름\n",
+      "valid": false
+    },
+    {
+      "input": "H2:fixed",
+      "valid": false
+    },
+    {
+      "input": "H2:omitted",
+      "valid": false
+    },
+    {
+      "input": "H2:style",
+      "valid": false
+    },
+    {
+      "input": "H2:decomposition",
+      "valid": false
+    },
+    {
+      "input": "H2:meta",
+      "valid": false
+    }
+  ],
+  "spaceVectors": [
+    {
+      "input": "{{SPACE:H4/주석:H3}}",
+      "valid": true,
+      "current": "H4:주석",
+      "previous": "H3"
+    },
+    {
+      "input": "{{SPACE:BODY:H4/기호2}}",
+      "valid": true,
+      "current": "BODY",
+      "previous": "H4:기호2"
+    },
+    {
+      "input": "{{SPACE:H4:H3}}",
+      "valid": true,
+      "current": "H4",
+      "previous": "H3"
+    },
+    {
+      "input": "{{SPACE:BODY:START}}",
+      "valid": true,
+      "current": "BODY",
+      "previous": "START"
+    },
+    {
+      "input": "{{SPACE:H2:TABLE}}",
+      "valid": true,
+      "current": "H2",
+      "previous": "TABLE"
+    },
+    {
+      "input": "{{SPACE:H7:H3}}",
+      "valid": true,
+      "current": "H7",
+      "previous": "H3"
+    },
+    {
+      "input": "{{SPACE:H4/주석:H3/기호2:BODY}}",
+      "valid": false
+    },
+    {
+      "input": "{{SPACE:H4:주석:H3}}",
+      "valid": false
+    },
+    {
+      "input": "{{SPACE:START:H2}}",
+      "valid": true,
+      "current": "START",
+      "previous": "H2"
+    },
+    {
+      "input": "{{SPACE:H2/고 정:BODY}}",
+      "valid": false
+    },
+    {
+      "input": "{{SPACE:H2/omitted:BODY}}",
+      "valid": false
+    },
+    {
+      "input": "{{SPACE:H2:}}",
+      "valid": false
+    },
+    {
+      "input": "{{SPACE:TABLE:H4}}",
+      "valid": true,
+      "current": "TABLE",
+      "previous": "H4"
+    },
+    {
+      "input": "{{SPACE:TABLE:H4/기호2}}",
+      "valid": true,
+      "current": "TABLE",
+      "previous": "H4:기호2"
+    },
+    {
+      "input": "{{SPACE:TABLE:TABLE}}",
+      "valid": true,
+      "current": "TABLE",
+      "previous": "TABLE"
+    },
+    {
+      "input": "{{SPACE:TABLE/주석:H4}}",
+      "valid": false
+    },
+    {
+      "input": "{{SPACE:○:DIV}}",
+      "valid": true,
+      "current": "○",
+      "previous": "DIV"
+    },
+    {
+      "input": "{{SPACE:□:BODY}}",
+      "valid": true,
+      "current": "□",
+      "previous": "BODY"
+    },
+    {
+      "input": "{{SPACE:ㅇ:LIST}}",
+      "valid": true,
+      "current": "ㅇ",
+      "previous": "LIST"
+    },
+    {
+      "input": "{{SPACE:-:CODE}}",
+      "valid": true,
+      "current": "-",
+      "previous": "CODE"
+    },
+    {
+      "input": "{{SPACE:H8:QUOTE}}",
+      "valid": true,
+      "current": "H8",
+      "previous": "QUOTE"
+    },
+    {
+      "input": "{{SPACE:H9:HR}}",
+      "valid": true,
+      "current": "H9",
+      "previous": "HR"
+    },
+    {
+      "input": "{{SPACE:H7/부록:H9/부록}}",
+      "valid": true,
+      "current": "H7:부록",
+      "previous": "H9:부록"
+    },
+    {
+      "input": "{{SPACE:TABLE:H7}}",
+      "valid": true,
+      "current": "TABLE",
+      "previous": "H7"
+    },
+    {
+      "input": "{{SPACE:BODY:○}}",
+      "valid": true,
+      "current": "BODY",
+      "previous": "○"
+    },
+    {
+      "input": "{{SPACE:H2:DEFAULT}}",
+      "valid": true,
+      "current": "H2",
+      "previous": "DEFAULT"
+    },
+    {
+      "input": "{{SPACE:abcdefghijklmnop:0123456789abcdef}}",
+      "valid": true,
+      "current": "abcdefghijklmnop",
+      "previous": "0123456789abcdef"
+    },
+    {
+      "input": "{{SPACE:H01:h2}}",
+      "valid": true,
+      "current": "H01",
+      "previous": "h2"
+    },
+    {
+      "input": "{{SPACE:abcdefghijklmnopq:BODY}}",
+      "valid": false
+    },
+    {
+      "input": "{{SPACE:본 문:앞 블록}}",
+      "valid": true,
+      "current": "본 문",
+      "previous": "앞 블록"
+    }
+  ],
+  "nameVectors": [
+    {
+      "input": "번호_매기기_제목",
+      "valid": true
+    },
+    {
+      "input": "깊은단계",
+      "valid": true
+    },
+    {
+      "input": "기호2",
+      "valid": true
+    },
+    {
+      "input": "기호99",
+      "valid": true
+    },
+    {
+      "input": "가나다라마바사아자차카타",
+      "valid": true
+    },
+    {
+      "input": "𐐀",
+      "valid": true
+    },
+    {
+      "input": "fixed",
+      "valid": false
+    },
+    {
+      "input": "omitted",
+      "valid": false
+    },
+    {
+      "input": "style",
+      "valid": false
+    },
+    {
+      "input": "decomposition",
+      "valid": false
+    },
+    {
+      "input": "meta",
+      "valid": false
+    },
+    {
+      "input": "",
+      "valid": false
+    },
+    {
+      "input": "a b",
+      "valid": false
+    },
+    {
+      "input": "a-b",
+      "valid": false
+    },
+    {
+      "input": "가\n",
+      "valid": false
+    },
+    {
+      "input": "가나다라마바사아자차카타파",
+      "valid": false
+    },
+    {
+      "input": "😀",
+      "valid": false
+    }
+  ]
+}

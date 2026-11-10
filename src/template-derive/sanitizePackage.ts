@@ -21,7 +21,7 @@ export function sanitizeHeader(header: Document, section: Document): void {
   for (const element of allElements(header)) {
     if (is(element, 'style', NS.head)) { element.setAttribute('name', `Style${element.getAttribute('id')}`); element.setAttribute('engName', `Style${element.getAttribute('id')}`); }
     for (const name of ['author', 'description', 'title', 'memo']) element.removeAttribute(name);
-    if (element.hasAttribute('binaryItemIDRef') || element.getAttribute('isEmbedded') === '1') throw new StyleError('unsupported', 'Header image fills/embedded fonts are not yet supported.');
+    if (element.getAttribute('binaryItemIDRef') || element.getAttribute('isEmbedded') === '1') throw new StyleError('unsupported', 'Header image fills/embedded fonts are not yet supported.');
     for (const child of Array.from(element.childNodes)) if ((child.nodeType === 3 || child.nodeType === 4) && child.nodeValue?.trim()) {
       if (element.localName === 'paraHead') {
         // Only numbering syntax and punctuation. Never retain arbitrary words
@@ -44,7 +44,7 @@ export function collectAssets(section: Document, sourcePackage: Document, zip: M
   const items = new Map(descendants(sourcePackage, 'item', OPF).map(item => [item.getAttribute('id'), item]));
   const ids = new Set<string>();
   for (const element of allElements(section)) for (const attr of Array.from(element.attributes)) {
-    if (attr.localName === 'binaryItemIDRef') ids.add(attr.value);
+    if (attr.localName === 'binaryItemIDRef' && attr.value) ids.add(attr.value);
     if (/^(?:href|src)$/i.test(attr.localName ?? '') && /^(?:https?:|file:|\/\/)/i.test(attr.value)) throw new StyleError('unsupported', 'External resource reference.');
   }
   const assets: Asset[] = [];

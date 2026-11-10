@@ -7,7 +7,7 @@
 
 import { MarkdownToHwpx } from './markdownToHwpx';
 import type { ConversionWarning } from './conversionReport';
-import { parseMarkerOptions } from './templateMarkers';
+import { invalidStyleVariantMarkers, invalidStyleVariantSuggestion, parseMarkerOptions } from './templateMarkers';
 
 export interface TemplateInspection {
     /** Markers the converter recognized, with the style ids they resolve to. */
@@ -65,15 +65,16 @@ export async function inspectTemplate(templatePath: string): Promise<TemplateIns
 }
 
 export function inspectTemplateXml(headerXml: string, sectionXml: string): TemplateInspection {
-    const converter = new MarkdownToHwpx({ 'pandoc-api-version': [1, 23], meta: {}, blocks: [] }, headerXml, sectionXml);
+    const converter = new MarkdownToHwpx({ 'pandoc-api-version': [1, 23], meta: {}, blocks: [] }, headerXml, sectionXml, null, null, undefined, undefined, false, undefined, false);
     const markers = converter.describeTemplateRules();
     const recognized = new Set(markers.map((rule) => rule.marker));
     const warnings = converter.report.toJSON().warnings;
     const reported = new Set(warnings.flatMap((warning) => warning.examples));
 
-    const unknownMarkers: TemplateInspection['unknownMarkers'] = [];
+    const unknownMarkers: TemplateInspection['unknownMarkers'] = invalidStyleVariantMarkers(sectionXml);
     const seen = new Set<string>();
     for (const match of sectionXml.matchAll(/\{\{([^{}<>\r\n]{1,40})\}\}/g)) {
+        if (invalidStyleVariantSuggestion(match[0])) continue;
         // {{H1|pageBreak}} is checked as {{H1}}; its options are checked by the converter.
         const parsed = parseMarkerOptions(match[1]);
         const marker = parsed?.canonical ?? match[0];
@@ -99,7 +100,7 @@ export function inspectTemplateXml(headerXml: string, sectionXml: string): Templ
             unknownMarkers.push({ marker, suggestion: closestMarker(name) });
             continue;
         }
-        if (recognized.has(marker) || name === 'CONTENT' || name === 'TABLE' || /^META:[^|]+(\|format=.*)?$/.test(name)) continue;
+        if (recognized.has(marker) || ['CONTENT', 'TABLE', 'DECOMPOSITION', 'BODY_START'].includes(name) || /^META:[^|]+(\|format=.*)?$/.test(name)) continue;
         // Prefix markers ({{□}}, {{1.}}) and numbered heading rules are reported
         // by the loader itself when they are malformed.
         if (!/^[A-Za-z_]/.test(name) || /^H[1-9]:/.test(name)) continue;

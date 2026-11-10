@@ -25,7 +25,7 @@ const HEADING = /^H[1-9]$/;
 // Options each marker kind understands; anything else is reported and ignored.
 const OPTIONS_BY_KIND: Array<[RegExp, string[]]> = [
     [HEADING, ['pageBreak', 'num', 'strip', 'keep', 'list']],
-    [/^TABLE$/, ['width', 'columns']],
+    [/^TABLE$/, ['width', 'columns', 'pageBreak']],
     [/^QUOTE(?:_[A-Z0-9]+)?$/, ['callouts', 'emoji', 'lead']],
 ];
 
@@ -57,6 +57,25 @@ export function parseMarkerOptions(inner: string): (ParsedMarker & { unknown: st
     return { canonical: `{{${canonicalHead}}}`, kind, arg, options, unknown };
 }
 
+/** Invalid named variants only; numbered/prefix headings and other marker families keep their grammar. */
+export function invalidStyleVariantSuggestion(marker: string): string | null {
+    const parsed = parseMarkerOptions(marker.slice(2, -2));
+    // Heading keep/strip options belong to the heading-prefix grammar.
+    if (parsed && HEADING.test(parsed.kind) && parsed.arg?.includes(':')) return null;
+    const match = /^\{\{((?:H[1-9]|BODY|CODE|QUOTE|HR|CAPTION|TABLE_CAPTION|FOOTNOTE|CELL_[A-Z_]+):)([^{}:|<>]+)((?:\|[^{}<>]*)?)\}\}$/.exec(marker);
+    if (!match || !/\s/.test(match[2])) return null;
+    return `{{${match[1]}${match[2].replace(/\s+/g, '_')}${match[3]}}}`;
+}
+
+export function invalidStyleVariantMarkers(xml: string): Array<{ marker: string; suggestion: string }> {
+    const invalid = new Map<string, string>();
+    for (const match of xml.matchAll(/\{\{[^{}<>]+\}\}/g)) {
+        const suggestion = invalidStyleVariantSuggestion(match[0]);
+        if (suggestion) invalid.set(match[0], suggestion);
+    }
+    return [...invalid].map(([marker, suggestion]) => ({ marker, suggestion }));
+}
+
 export function normalizeTemplateMarkers(xml: string): {
     xml: string;
     /** Canonical marker text → its options (first definition wins). */
@@ -68,6 +87,7 @@ export function normalizeTemplateMarkers(xml: string): {
     const unknownOptions: string[] = [];
     if (!xml.includes('|')) return { xml, options, unknownOptions };
     const normalized = xml.replace(/\{\{([^{}<>\r\n]{1,120})\}\}/g, (marker, inner: string) => {
+        if (invalidStyleVariantSuggestion(marker)) return marker;
         const parsed = parseMarkerOptions(inner);
         if (!parsed) return marker;
         if (!options.has(parsed.canonical)) options.set(parsed.canonical, parsed.options);

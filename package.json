@@ -1,6 +1,6 @@
 {
   "name": "md-to-hwpx",
-  "version": "0.9.10",
+  "version": "0.9.18",
   "description": "Export Markdown notes to Hangul HWPX documents formatted by HWPX templates, with an MCP-like API for AI agent plugins.",
   "main": "main.js",
   "private": true,
@@ -45,6 +45,7 @@
   },
   "overrides": {
     "moment": "2.31.0",
+    "minimatch@>=7.0.0 <11.0.1": "11.0.5",
     "eslint-plugin-obsidianmd": {
       "obsidian": "$obsidian"
     }

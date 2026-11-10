@@ -1,4 +1,7 @@
-import { DERIVE_TOOL_DEFINITIONS, markerCatalog, DeriveProviderError, resolveDerivation, prepareDerivation, derivationReport, dependenciesCurrent, type InputDependency } from './deriveProvider';
+import { inspectDecompositionTemplate } from './decompositionInspection';
+import { RetiredRecordError } from '../src/template-derive/decompositionRecord';
+import { DialectError } from '../src/template-derive/templateMetadata';
+import { DERIVE_TOOL_DEFINITIONS, markerCatalog, DeriveProviderError, resolveDerivation, prepareDerivation, derivationReport, dependenciesCurrent, mergeDependencies, type InputDependency } from './deriveProvider';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -6,8 +9,23 @@ import { createHash, randomUUID } from 'crypto';
 import { parseMarkdownStringWithFrontmatter } from '../src/frontmatterParser';
 import { MarkoToPandocAdapter } from '../src/markoAdapter';
 import { rewriteObsidianImageEmbeds } from '../src/obsidianImageEmbeds';
-import type { ConversionReport } from '../src/conversionReport';
+import { stripObsidianComments } from '../src/obsidianComments';
+import { scanRenderableBlocks } from '../src/renderableBlocks';
+import { ConversionReportCollector, type ConversionReport } from '../src/conversionReport';
 import type { TemplateInspection } from '../src/templateInspector';
+import { hasUnboundThirdPartyCapture } from './agentCaptureGuard';
+import { captureReport } from './captureReport';
+import { preflightIdentity } from './preflightIdentity';
+import { safeSelectionSummary, type SelectionSummary } from '../src/selectionObservation';
+import { isRecordedObservedBlockIndex } from '../src/observedBlockIndex';
+import { observedBlockPage } from './observedBlockPage';
+import { copyOutputAnchorEvidence, type SavedOutputAnchorEvidence } from './outputAnchorEvidence';
+import type { ObservedBlockIndex } from '../src/observedBlockIndex';
+import { deriveBundleBytes, deriveBundleInputSchema, previewDerivedExport, readBoundBytes, validatedBundle, validateBundleDialect } from './derivedExport';
+import { conversionFingerprint } from '../src/conversionFingerprint';
+import { loadNoteTemplate, trialTemplate, templateOverrideWarnings } from './templateLoader';
+import { resolveDecompositionSave, prepareDecompositionSave, assertDecompositionPathsFree, executeDecompositionSave, type PreparedDecompositionFile } from './decompositionSave';
+import { inspectDeriveStructure } from '../src/template-derive/structure';
 
 /**
  * Agent facade (agentinterop v1). An agent host discovers this object on the
@@ -40,9 +58,10 @@ export interface AgentCapabilityProvider {
     /** Fixes the file a commit tool would create, without changing anything. */
     resolveTarget(name: string, args: JsonObject, ctx?: CommitContext): Promise<ExportTarget>;
     readonly commit: {
-        prepare(request: { tool: string; args: JsonObject; target: unknown }, ctx?: CommitContext): Promise<CommitPreparation>;
+        prepare(request: { tool: string; args: JsonObject; target: unknown; captureOutputAnchors?: boolean }, ctx?: CommitContext): Promise<CommitPreparation>;
         execute(ticket: CommitTicket, ctx?: CommitContext): Promise<CommitReceipt>;
         status(preparationId: string, ctx?: CommitContext): Promise<CommitReceipt | { state: 'unknown_preparation' }>;
+        outputAnchors?(request: { preparationId: string; preparationDigest: string; archiveSha256: string; offset?: number; limit?: number }, ctx?: CommitContext): Promise<JsonObject>;
     };
     dispose(): void;
 }
@@ -52,7 +71,7 @@ export interface Caller { pluginId?: string; conversationId?: string; runId?: st
 export interface CommitContext { caller?: Caller; signal?: AbortSignal }
 export interface ExportTarget { kind: 'new'; destination: string; template: { path: string; sha256: string } }
 type FileEntry = {
-    kind: 'file'; path: string; op: 'create'; role: 'primary';
+    kind: 'file'; path: string; op: 'create'; role: 'primary' | 'derived';
     sha256Before: null; sha256Expected: string; sizeBytes: number;
 };
 type FolderEntry = { kind: 'folder'; path: string; op: 'create'; role: 'folder'; existedBefore: false };
@@ -112,13 +131,16 @@ export interface ExportProviderHost {
     /** Vault paths of the .hwpx templates offered during export. */
     templates(): string[];
     /** The Markdown note at this Vault path, or null when there is none. */
-    readNote(notePath: string): Promise<{ markdown: string } | null>;
+    readNote(notePath: string): Promise<{ markdown: string; sha256?: string; sizeBytes?: number } | null>;
+    resolveTemplateLink?(link: string, notePath: string): string | null;
+    assertTemplatePath?(vaultPath: string): void;
+    hasPathCollision?(vaultPath: string): boolean | Promise<boolean>;
     /** Where exporting this note would write, by the current settings. */
     outputPath(notePath: string): string;
     /** Whether an image link of the note resolves to an embeddable Vault file. */
     resolvesImage(source: string, notePath: string): boolean;
     /** Runs the converter with the export settings, without rendered-block capture, writing to an absolute path. */
-    convert(markdown: string, notePath: string, templatePath: string, outputAbsolutePath: string): Promise<ConversionReport | void>;
+    convert(markdown: string, notePath: string, templatePath: string, outputAbsolutePath: string, signal?: AbortSignal, noteIdentity?: { sha256: string; sizeBytes: number }, captureBlockIndex?: boolean): Promise<ConversionReport | { report: ConversionReport; templateSha256: string; inspection?: TemplateInspection; artifactId?: string | null; configDigest?: string; inputDependencies?: InputDependency[] | null; templateAndImageDependencies?: InputDependency[]; selectionSummary?: SelectionSummary; blockIndex?: unknown } | void>;
     /** Markers the template defines or mistypes (src/templateInspector.ts). */
     inspectTemplate?(templatePath: string): Promise<TemplateInspection>;
     /** Whether a file or folder already exists at this Vault path. */
@@ -127,13 +149,19 @@ export interface ExportProviderHost {
     /** sha256 (hex) of the template file: binds the approved template to the one converted. */
     templateHash(templatePath: string): Promise<string>;
     /** The full export (render capture + conversion) into memory. Writes no Vault file. */
-    render(notePath: string, templatePath: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; report: ConversionReport; inputDependencies?: InputDependency[]; providerInternalWrites?: string[] }>;
+    render(notePath: string, templatePath: string, signal?: AbortSignal, captureOutputAnchors?: boolean, captureBlockIndex?: boolean): Promise<{ bytes: Uint8Array; report: ConversionReport; inputDependencies?: InputDependency[]; providerInternalWrites?: string[]; outputAnchors?: unknown; blockIndex?: ObservedBlockIndex }>;
+    /** Full conversion using a transient, already validated template; never creates a Vault file. */
+    renderDerived?(notePath: string, samplePath: string, templateBytes: Uint8Array, signal?: AbortSignal, captureOutputAnchors?: boolean): Promise<{ bytes: Uint8Array; report: ConversionReport; inputDependencies: InputDependency[]; providerInternalWrites: string[]; outputAnchors?: unknown; blockIndex: ObservedBlockIndex }>;
     /** Ancestor folders of a Vault path that do not exist yet, outermost first. */
     missingFolders(vaultPath: string): string[];
     /** Creates the folders, then the new file. Fails rather than overwriting. */
     writeNew(vaultPath: string, bytes: Uint8Array, folders: string[]): Promise<void>;
     /** Current bytes of a Vault file, or null when there is none. */
     readBytes(vaultPath: string): Promise<Uint8Array | null>;
+    /** Optional bounded read, required for saved-anchor queries. */
+    readBytesBounded?(vaultPath: string, maxBytes: number): Promise<Uint8Array | null>;
+    /** Whether the data-only chart renderer is currently available. */
+    staticChartAvailable?(): boolean;
 }
 
 class ToolError extends Error {
@@ -161,12 +189,51 @@ const meta = (): JsonObject => ({
 const TOOLS: JsonObject[] = [
     ...DERIVE_TOOL_DEFINITIONS,
     {
+        name: 'inspect_decomposition_template', title: 'Inspect decomposition template',
+        description: 'Host-only read of derived-mode marker, pair record and current record-excluded payload digest.',
+        inputSchema: { type: 'object', additionalProperties: false, required: ['path', 'expected_sha256'], properties: { path: { type: 'string', minLength: 1, maxLength: 4096 }, expected_sha256: { type: 'string', minLength: 64, maxLength: 64 } } },
+        annotations: { readOnlyHint: true }, _meta: { ...meta(), 'dev.agentinterop/keywords': [], 'dev.agentinterop/resourceTypes': [] },
+    },
+    {
+        name: 'inspect_derive_structure', title: 'Inspect derivation structure',
+        description: 'Host-only read of sample structure facts without source prose.',
+        inputSchema: { type: 'object', additionalProperties: false, required: ['sample_path', 'expected_sample_sha256'], properties: { sample_path: { type: 'string', minLength: 1, maxLength: 4096 }, expected_sample_sha256: { type: 'string', minLength: 64, maxLength: 64 } } },
+        annotations: { readOnlyHint: true }, _meta: { ...meta(), 'dev.agentinterop/keywords': [], 'dev.agentinterop/resourceTypes': [] },
+    },
+    {
+        name: 'preview_derived_export', title: 'Preview derived export',
+        description: 'Host validation of a derived bundle or a bound note with its current frontmatter template; never writes a Vault file.',
+        inputSchema: { type: 'object', additionalProperties: false, properties: {
+            derive_from: deriveBundleInputSchema, note_path: { type: 'string', minLength: 1, maxLength: 4096 },
+            expected_template_sha256: { type: 'string', minLength: 64, maxLength: 64 },
+            expected_note_sha256: { type: 'string', minLength: 64, maxLength: 64 },
+            markdown: { type: 'string', maxLength: 524288 }, expected_markdown_sha256: { type: 'string', minLength: 64, maxLength: 64 },
+            allowed: { type: 'object', additionalProperties: false, required: ['omitted_refs'], properties: { omitted_refs: { type: 'array', maxItems: 2000, items: { type: 'string', minLength: 1, maxLength: 256 } } } },
+        } }, annotations: { readOnlyHint: true },
+        _meta: { ...meta(), 'dev.agentinterop/keywords': [], 'dev.agentinterop/resourceTypes': [] },
+    },
+    {
         name: 'get_export_options',
         title: 'HWPX 내보내기 설정',
         description: 'HWPX Exporter의 현재 설정을 돌려준다: 쓸 수 있는 한글 템플릿(.hwpx) 목록, 결과를 저장할 위치와 파일 이름 규칙, 그림 캡처 설정.',
         inputSchema: { type: 'object', additionalProperties: false, properties: {} },
         annotations: { readOnlyHint: true },
         _meta: meta(),
+    },
+    {
+        name: 'inspect_export_blocks',
+        title: 'Inspect export blocks',
+        description: 'Host validation read of a bound trial conversion; returns partial observed structure without block text.',
+        inputSchema: { type: 'object', additionalProperties: false, required: ['path'], properties: {
+            path: { type: 'string', minLength: 1, maxLength: 4096 },
+            template: { type: 'string', minLength: 1, maxLength: 4096 },
+            offset: { type: 'integer', minimum: 0, maximum: 50000 },
+            limit: { type: 'integer', minimum: 1, maximum: 500 },
+            expected_inputs_digest: { type: 'string', minLength: 64, maxLength: 64 },
+            block_contract_version: { type: 'string', enum: ['observed-block-page/0.4'] },
+        } },
+        annotations: { readOnlyHint: true },
+        _meta: { ...meta(), 'dev.agentinterop/keywords': [], 'dev.agentinterop/resourceTypes': [] },
     },
     {
         name: 'check_export',
@@ -178,7 +245,7 @@ const TOOLS: JsonObject[] = [
             required: ['path'],
             properties: {
                 path: { type: 'string', minLength: 1, maxLength: 4096, description: '점검할 Markdown 노트의 Vault 기준 상대 경로.' },
-                template: { type: 'string', minLength: 1, maxLength: 4096, description: 'get_export_options가 준 템플릿 경로 중 하나. 생략하면 목록의 첫 템플릿으로 시험한다.' },
+                template: { type: 'string', minLength: 1, maxLength: 4096, description: 'get_export_options가 준 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 템플릿으로 시험한다.' },
             },
         },
         annotations: { readOnlyHint: true },
@@ -187,16 +254,17 @@ const TOOLS: JsonObject[] = [
     {
         name: 'export_note',
         title: 'HWPX 내보내기 실행',
-        description: 'Markdown 노트를 한글(HWPX) 문서로 내보내어 Vault에 새 .hwpx 파일을 생성한다. 템플릿(template)을 지정하면 해당 서식으로 작성되며, 생략 시 템플릿 폴더의 첫 번째 템플릿을 적용한다. outputPath로 저장 위치를 지정할 수 있다.',
+        description: 'Markdown 노트를 한글(HWPX) 문서로 내보내어 Vault에 새 .hwpx 파일을 생성한다. 템플릿(template)을 지정하면 해당 서식으로 작성되며, 생략 시 노트의 hwpx-template, 없으면 템플릿 폴더의 첫 번째 템플릿을 적용한다. outputPath로 저장 위치를 지정할 수 있다.',
         inputSchema: {
             type: 'object',
             additionalProperties: false,
             required: ['path'],
             properties: {
                 path: { type: 'string', minLength: 1, maxLength: 4096, description: '내보낼 Markdown 노트의 Vault 기준 상대 경로 (예: "노트.md", "100.내용/보고서.md").' },
-                template: { type: 'string', minLength: 1, maxLength: 4096, description: 'get_export_options로 확인한 템플릿 경로 중 하나. 생략하면 목록의 첫 번째 템플릿을 사용한다.' },
+                template: { type: 'string', minLength: 1, maxLength: 4096, description: 'get_export_options로 확인한 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 번째 템플릿을 사용한다.' },
                 expected_note_sha256: { type: 'string', minLength: 64, maxLength: 64 },
                 expected_template_sha256: { type: 'string', minLength: 64, maxLength: 64 },
+                derive_from: deriveBundleInputSchema,
                 outputPath: { type: 'string', minLength: 1, maxLength: 4096, description: '결과 .hwpx 파일의 Vault 기준 상대 경로. 생략하면 플러그인 설정의 위치/이름 규칙을 따른다.' },
             },
         },
@@ -337,19 +405,15 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
     let disposed = false;
 
     /** Validates export_note arguments; the destination checked here is the one written. */
-    const resolveExport = async (args: JsonObject): Promise<{ notePath: string; template: string; destination: string }> => {
+    const resolveExport = async (args: JsonObject): Promise<{ notePath: string; template: string; destination: string; bundle?: ReturnType<typeof validatedBundle> }> => {
         const notePath = normalizeNotePath(args.path);
         if (!/\.md$/i.test(notePath)) throw new ToolError('UNSUPPORTED_FORMAT', 'Markdown 노트(.md)만 내보낼 수 있다.');
         const note = await host.readNote(notePath);
         if (!note) throw new ToolError('NOT_FOUND', `Vault에 이 노트가 없다: ${notePath}`, true);
-        const templates = host.templates();
-        if (templates.length === 0) {
-            throw new ToolError('NO_TEMPLATE', '템플릿 폴더에 .hwpx 템플릿이 없어 내보낼 수 없다. 사람이 플러그인 설정에서 템플릿 폴더를 정해야 한다.');
-        }
-        const template = args.template === undefined ? templates[0] : args.template;
-        if (typeof template !== 'string' || !templates.includes(template)) {
-            throw new ToolError('INVALID_ARGUMENT', `template은 다음 중 하나여야 한다: ${listed(templates)}`, true);
-        }
+        const bundle = args.derive_from === undefined ? undefined : validatedBundle(args.derive_from);
+        if (bundle && (args.template !== undefined || args.expected_template_sha256 !== undefined))
+            throw new ToolError('INVALID_ARGUMENT', 'derive_from와 template은 함께 지정할 수 없다.');
+        const template = bundle ? bundle.sample_path : (await loadNoteTemplate(host, notePath, args.template, args.expected_template_sha256)).path;
 
         let customOutputPath: string | undefined;
         if (args.outputPath !== undefined) {
@@ -371,7 +435,8 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             throw new ToolError('ALREADY_EXISTS', `이미 있는 파일은 덮어쓰지 않는다: ${target}. 다른 outputPath를 지정하라.`, true);
         }
 
-        return { notePath, template, destination: target };
+        if (bundle) await readBoundBytes(host, bundle.sample_path, bundle.expected_sample_sha256);
+        return { notePath, template, destination: target, ...(bundle ? { bundle } : {}) };
     };
 
     const prepared = new Map<string, {
@@ -380,15 +445,17 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
         owner: string;
         state: 'open' | 'executed' | 'dropped';
         receipt?: CommitReceipt;
+        outputAnchors?: SavedOutputAnchorEvidence;
+        decompositionFiles?: PreparedDecompositionFile[];
     }>();
 
     const resolveTarget = async (name: string, args: JsonObject, ctx?: CommitContext): Promise<ExportTarget> => {
         if (disposed) throw new ToolError('DISPOSED', '플러그인이 종료됐다.');
         if (ctx?.signal?.aborted) throw new ToolError('CANCELLED', '대상 확인이 취소됐다.');
-        if (name === 'derive_template') return resolveDerivation(host, args);
+        if (name === 'derive_template') return 'derive_from' in args ? (await resolveDecompositionSave(host, args)).target : resolveDerivation(host, args);
         if (name !== 'export_note') throw new ToolError('UNKNOWN_TOOL', `저장 도구가 아니다: ${name}`);
-        const { template, destination } = await resolveExport(args ?? {});
-        return { kind: 'new', destination, template: { path: template, sha256: await host.templateHash(template) } };
+        const { template, destination, bundle } = await resolveExport(args ?? {});
+        return { kind: 'new', destination, template: { path: template, sha256: bundle?.expected_sample_sha256 ?? await host.templateHash(template) } };
     };
 
     const notWritten = (record: { shown: CommitPreparation }, ticketId: string, code: string, message: string): CommitReceipt => ({
@@ -407,25 +474,58 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             if (disposed) throw new ToolError('DISPOSED', '플러그인이 종료됐다.');
             if (!['export_note', 'derive_template'].includes(request?.tool)) throw new ToolError('UNKNOWN_TOOL', `저장 도구가 아니다: ${String(request?.tool)}`);
             if (!ctx?.caller) throw new ToolError('INVALID_ARGUMENT', '저장을 요청한 호출을 확인할 수 없다.');
+            if (request.captureOutputAnchors !== undefined && typeof request.captureOutputAnchors !== 'boolean') throw new ToolError('INVALID_ARGUMENT', 'Invalid output anchor request.');
+            const captureOutputAnchors = request.captureOutputAnchors === true;
             const target = await resolveTarget(request.tool, request.args, ctx);
             if (canonicalJson(target) !== canonicalJson(request.target)) {
                 throw new ToolError('TARGET_MISMATCH', '확정한 노트·템플릿·저장 경로가 지금과 다르다. 다시 준비하라.', true);
             }
             let bytes: Uint8Array, notePath: string, template: string;
-            let report: ConversionReport | undefined, derivation: Record<string, unknown> | undefined;
+            let report: ConversionReport | undefined, derivation: Record<string, unknown> | undefined, conversionHash: string | undefined, derivationHash: string | undefined;
             let inputDependencies: InputDependency[], providerInternalWrites: string[] = [];
-            if (request.tool === 'derive_template') {
+            let outputAnchors: SavedOutputAnchorEvidence | null = null;
+            let decomposition: Awaited<ReturnType<typeof prepareDecompositionSave>> | undefined;
+            if (request.tool === 'derive_template' && 'derive_from' in request.args) {
+                decomposition = await prepareDecompositionSave(host, request.args, ctx.signal);
+                bytes = decomposition.files[0].bytes; notePath = decomposition.notePath; template = target.template.path; inputDependencies = decomposition.inputDependencies;
+                providerInternalWrites = decomposition.providerInternalWrites;
+            } else if (request.tool === 'derive_template') {
                 const prepared = await prepareDerivation(host, request.args, ctx.signal);
                 bytes = prepared.bytes; derivation = prepared.report; notePath = prepared.notePath; template = target.template.path; inputDependencies = prepared.inputDependencies;
+            } else if (request.args.derive_from !== undefined) {
+                const resolved = await resolveExport(request.args); notePath = resolved.notePath; template = resolved.template;
+                const bundle = resolved.bundle; if (!bundle || !host.renderDerived) throw new ToolError('INVALID_ARGUMENT', 'Derived rendering unavailable.');
+                const noteHash = request.args.expected_note_sha256;
+                if (typeof noteHash !== 'string' || !/^[a-f0-9]{64}$/.test(noteHash)) throw new ToolError('INVALID_ARGUMENT', 'Bound note SHA-256 required.');
+                const noteBytes = await readBoundBytes(host, notePath, noteHash);
+                validateBundleDialect(bundle, new TextDecoder('utf-8', { fatal: true }).decode(noteBytes));
+                const derived = await deriveBundleBytes(host, bundle, ctx.signal);
+                const rendered = await host.renderDerived(notePath, template, derived.bytes, ctx.signal, captureOutputAnchors);
+                bytes = rendered.bytes; report = rendered.report; derivationHash = bundle.derivation_sha256;
+                conversionHash = await conversionFingerprint(bytes, ctx.signal);
+                inputDependencies = mergeDependencies([{ path: notePath, sha256: noteHash }, { path: template, sha256: bundle.expected_sample_sha256 }, ...rendered.inputDependencies]);
+                providerInternalWrites = rendered.providerInternalWrites;
+                if (captureOutputAnchors) { try { outputAnchors = copyOutputAnchorEvidence(rendered.outputAnchors, sha256(bytes)); } catch { outputAnchors = null; } }
             } else {
                 const resolved = await resolveExport(request.args ?? {}); notePath = resolved.notePath; template = resolved.template;
-                const noteBytes = await host.readBytes(notePath), templateBytes = await host.readBytes(template);
-                if (!noteBytes || !templateBytes) throw new ToolError('SOURCE_CHANGED', 'Export inputs are missing.');
+                const noteBytes = await host.readBytes(notePath), templateBytes = await (host.readBytesBounded ? host.readBytesBounded(template, 32 * 1024 * 1024) : host.readBytes(template));
+                if (!noteBytes || !templateBytes || templateBytes.byteLength > 32 * 1024 * 1024) throw new ToolError('SOURCE_CHANGED', 'Export inputs are missing or template exceeds byte budget.');
                 inputDependencies = [{ path: notePath, sha256: sha256(noteBytes) }, { path: template, sha256: sha256(templateBytes) }];
                 if (inputDependencies[1].sha256 !== target.template.sha256 || request.args.expected_note_sha256 !== undefined && request.args.expected_note_sha256 !== inputDependencies[0].sha256 || request.args.expected_template_sha256 !== undefined && request.args.expected_template_sha256 !== inputDependencies[1].sha256) throw new ToolError('SOURCE_CHANGED', 'Export input hash changed.');
-                const rendered = await host.render(notePath, template, ctx.signal); bytes = rendered.bytes; report = rendered.report;
+                const rendered = captureOutputAnchors ? await host.render(notePath, template, ctx.signal, true) : await host.render(notePath, template, ctx.signal); bytes = rendered.bytes; report = rendered.report;
+                if (captureOutputAnchors) {
+                    // Anchor evidence is optional: a malformed observation must not
+                    // prevent the otherwise valid export from being prepared.
+                    try { outputAnchors = copyOutputAnchorEvidence(rendered.outputAnchors, sha256(bytes)); }
+                    catch { outputAnchors = null; }
+                }
+                // Preserve legacy hosts that return opaque, non-ZIP export bytes.
+                // Real template conversions return HWPX packages and always carry this digest.
+                if (bytes[0] === 0x50 && bytes[1] === 0x4b) conversionHash = await conversionFingerprint(bytes, ctx.signal);
                 inputDependencies.push(...(rendered.inputDependencies ?? [])); providerInternalWrites = rendered.providerInternalWrites ?? [];
             }
+            const templateWarnings = request.tool === 'export_note'
+                ? await templateOverrideWarnings(host, notePath, request.args.template, ctx.signal) : [];
             if (!await dependenciesCurrent(host, inputDependencies)) throw new ToolError('SOURCE_CHANGED', 'Input changed during preparation.');
             if (ctx.signal?.aborted) throw new ToolError('CANCELLED', '저장 준비가 취소됐다.');
             const owner = ownerOf(ctx.caller);
@@ -443,7 +543,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 destination: target.destination,
                 format: 'hwpx',
                 saveOptions: { note: notePath, inputDependencies: inputDependencies.map(item => ({ path: item.path, sha256: item.sha256 })) },
-                writeSet: [
+                writeSet: decomposition?.writeSet ?? [
                     ...folders,
                     {
                         kind: 'file', path: target.destination, op: 'create', role: 'primary',
@@ -452,14 +552,17 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 ],
                 providerInternalWrites,
                 report: {
-                    summary: [`노트 ${notePath}을(를) 템플릿 ${template}로 변환한 새 파일을 만든다.`],
-                    warnings: report ? warningLines(report).slice(0, 20).map((line) => line.slice(0, 300)) : [],
+                    summary: decomposition ? ['샘플 분해 저장: 텍스트 MD 1개 + 템플릿 HWPX 1개.'] : [`노트 ${notePath}을(를) 템플릿 ${template}로 변환한 새 파일을 만든다.`],
+                    warnings: [...templateWarnings.map((warning) => '- ' + warning.message), ...warningLines(report).slice(0, 20).map((line) => line.slice(0, 300))],
                     ...(derivation ? { derivation: derivation as JsonObject } : {}),
+                    ...(derivationHash ? { derivation_sha256: derivationHash } : {}),
+                    ...(conversionHash ? { conversionFingerprint: conversionHash } : {}),
+                    ...(decomposition ? decomposition.report : {}),
                 },
                 expiresAt: new Date(Date.now() + COMMIT_TTL_MS).toISOString(),
             };
             const shown: CommitPreparation = { ...body, preparationDigest: sha256(canonicalJson(body)) };
-            prepared.set(shown.preparationId, { shown, bytes, owner, state: 'open' });
+            prepared.set(shown.preparationId, { shown, bytes, owner, state: 'open', ...(decomposition ? { decompositionFiles: decomposition.files } : {}), ...(outputAnchors ? { outputAnchors } : {}) });
             while (prepared.size > MAX_PREPARED) prepared.delete(prepared.keys().next().value as string);
             return JSON.parse(JSON.stringify(shown)) as CommitPreparation;
         },
@@ -489,6 +592,16 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             }
             if (disposed || ctx.signal?.aborted) {
                 return notWritten(record, ticketId, 'CANCELLED', '저장이 취소됐다. 저장하지 않았다.');
+            }
+            if (record.decompositionFiles) {
+                try { await assertDecompositionPathsFree(host, record.decompositionFiles.map(f => f.path)); }
+                catch (cause) { return notWritten(record, ticketId, cause instanceof DeriveProviderError ? cause.code : 'READBACK_FAILED', String(cause)); }
+                const dependencies = record.shown.saveOptions.inputDependencies as Array<{ path: string; sha256: string }>;
+                if (!await dependenciesCurrent(host, dependencies).catch(() => false)) { record.state = 'dropped'; return notWritten(record, ticketId, 'SOURCE_CHANGED', 'Input changed after preparation.'); }
+                if (disposed || ctx.signal?.aborted) return notWritten(record, ticketId, 'CANCELLED', 'Save cancelled before first write.');
+                record.state = 'executed';
+                record.receipt = await executeDecompositionSave(host, record.shown, record.decompositionFiles, ticketId, ctx.signal, () => disposed);
+                return JSON.parse(JSON.stringify(record.receipt)) as CommitReceipt;
             }
             const { destination } = record.shown;
             if (await host.readBytes(destination)) {
@@ -542,6 +655,37 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             return JSON.parse(JSON.stringify(record.receipt)) as CommitReceipt;
         },
 
+        /** Optional local read; never changes the v1 preparation or receipt. */
+        async outputAnchors(request, ctx) {
+            if (disposed || ctx?.signal?.aborted) throw new ToolError('CANCELLED', 'Output anchor read cancelled.');
+            const record = prepared.get(request?.preparationId);
+            const offset = request?.offset ?? 0, limit = request?.limit ?? 100;
+            if (!record || !ctx?.caller || ownerOf(ctx.caller) !== record.owner ||
+                request.preparationDigest !== record.shown.preparationDigest ||
+                record.receipt?.state !== 'written' || record.state !== 'executed' ||
+                !record.outputAnchors || request.archiveSha256 !== record.outputAnchors.archiveSha256 ||
+                Date.parse(record.shown.expiresAt) <= Date.now() ||
+                !Number.isSafeInteger(offset) || offset < 0 || offset > record.outputAnchors.anchors.length ||
+                !Number.isSafeInteger(limit) || limit < 1 || limit > 500)
+                throw new ToolError('INVALID_ARGUMENT', 'Bound saved output anchors unavailable.');
+            const entry = record.shown.writeSet.find((item): item is FileEntry => item.kind === 'file' && item.path === record.shown.destination);
+            if (!entry || !host.readBytesBounded) throw new ToolError('INVALID_ARGUMENT', 'Bounded output read unavailable.');
+            const current = await host.readBytesBounded(record.shown.destination, entry.sizeBytes).catch(() => {
+                throw new ToolError('READBACK_FAILED', 'Saved output changed or cannot be read within its approved size.');
+            });
+            if (ctx.signal?.aborted) throw new ToolError('CANCELLED', 'Output anchor read cancelled.');
+            if (disposed || prepared.get(record.shown.preparationId) !== record || Date.parse(record.shown.expiresAt) <= Date.now())
+                throw new ToolError('EXPIRED', 'Saved output anchors are no longer available.');
+            if (!current || current.byteLength !== entry.sizeBytes || sha256(current) !== record.outputAnchors.archiveSha256)
+                throw new ToolError('SOURCE_CHANGED', 'Saved output changed; anchors are no longer available.');
+            const evidence = record.outputAnchors, anchors = evidence.anchors.slice(offset, offset + limit).map(anchor => ({ ...anchor }));
+            const next = offset + anchors.length;
+            return { version: `saved-output-anchors/${evidence.anchorVersion}`, state: 'partial', scope: 'rendered_export',
+                preparationId: record.shown.preparationId, preparationDigest: record.shown.preparationDigest,
+                destination: record.shown.destination, archiveSha256: evidence.archiveSha256, sectionSha256: evidence.sectionSha256,
+                total: evidence.anchors.length, offset, nextOffset: next < evidence.anchors.length ? next : null, anchors };
+        },
+
         /** Result of an execution. Never writes. */
         async status(preparationId) {
             const record = prepared.get(preparationId);
@@ -551,11 +695,67 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
     };
 
     const handlers: Record<string, (args: JsonObject, signal?: AbortSignal) => Promise<AgentToolResult>> = {
+        async inspect_decomposition_template(args, signal) {
+            const result = await inspectDecompositionTemplate(host, args, signal);
+            return { content: [{ type: 'text', text: 'Decomposition template integrity facts.' }], structuredContent: JSON.parse(JSON.stringify(result)) as JsonObject };
+        },
+        async inspect_derive_structure(args, signal) {
+            if (Object.keys(args).some(k => !['sample_path', 'expected_sample_sha256'].includes(k)) || typeof args.sample_path !== 'string' || !/\.hwpx$/i.test(args.sample_path) || typeof args.expected_sample_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(args.expected_sample_sha256)) throw new ToolError('INVALID_ARGUMENT', 'Bound HWPX sample required.');
+            signal?.throwIfAborted();
+            const bytes = await readBoundBytes(host, args.sample_path, args.expected_sample_sha256);
+            const result = await inspectDeriveStructure(bytes, signal);
+            if (!await dependenciesCurrent(host, [{ path: args.sample_path, sha256: args.expected_sample_sha256 }])) throw new ToolError('SOURCE_CHANGED', 'Sample changed during structure inspection.');
+            return { content: [{ type: 'text', text: 'Derivation structure facts.' }], structuredContent: JSON.parse(JSON.stringify(result)) as JsonObject };
+        },
+        async preview_derived_export(args, signal) {
+            const result = await previewDerivedExport(host, args, signal);
+            return { content: [{ type: 'text', text: 'Derived export preview.' }], structuredContent: JSON.parse(JSON.stringify(result)) as JsonObject };
+        },
         async get_derivation_report(args, signal) {
             const report = await derivationReport(host, args, signal);
             return { content: [{ type: 'text', text: 'Current derivation report; layout not measured.' }], structuredContent: report, _meta: { 'dev.agentinterop/evidencePaths': [typeof args.path === 'string' ? args.path : ''] } };
         },
         async derive_template() { throw new ToolError('INVALID_ARGUMENT', 'derive_template requires the host commit approval pipeline.'); },
+        async inspect_export_blocks(args, signal) {
+            signal?.throwIfAborted();
+            if (Object.keys(args).some(key => !['path', 'template', 'offset', 'limit', 'expected_inputs_digest', 'block_contract_version'].includes(key)))
+                throw new ToolError('INVALID_ARGUMENT', 'Unexpected block inspection argument.');
+            const notePath = normalizeNotePath(args.path);
+            if (!/\.md$/i.test(notePath)) throw new ToolError('UNSUPPORTED_FORMAT', 'Markdown note required.');
+            const offset = args.offset === undefined ? 0 : args.offset;
+            const limit = args.limit === undefined ? 100 : args.limit;
+            const expected = args.expected_inputs_digest;
+            if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset > 50000 ||
+                typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 500 ||
+                (expected !== undefined && (typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected))) ||
+                (offset > 0 && expected === undefined) ||
+                (args.block_contract_version !== undefined && args.block_contract_version !== 'observed-block-page/0.4'))
+                throw new ToolError('INVALID_ARGUMENT', 'Invalid page or missing expected inputs digest.');
+            const template = (await trialTemplate(host, notePath, args.template, signal)).path;
+            const note = await host.readNote(notePath);
+            signal?.throwIfAborted();
+            if (!note) throw new ToolError('NOT_FOUND', 'Note not found.');
+            if (!note.sha256 || note.sizeBytes === undefined)
+                throw new ToolError('INVALID_ARGUMENT', 'A bound note identity is required.');
+            const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hwpx-export-blocks-'));
+            try {
+                const conversion = await host.convert(note.markdown, notePath, template, path.join(workDir, 'check.hwpx'),
+                    signal, { sha256: note.sha256, sizeBytes: note.sizeBytes }, true);
+                signal?.throwIfAborted();
+                if (!conversion || !('templateSha256' in conversion) || !isRecordedObservedBlockIndex(conversion.blockIndex))
+                    throw new ToolError('INVALID_ARGUMENT', 'Bound block observations unavailable.');
+                const page = observedBlockPage({ pluginId: host.id, pluginVersion: host.version, notePath,
+                    noteSha256: note.sha256, templatePath: template, templateSha256: conversion.templateSha256,
+                    artifactId: conversion.artifactId ?? null, configDigest: conversion.configDigest ?? '',
+                    inputDependencies: conversion.inputDependencies ?? null, index: conversion.blockIndex,
+                    offset, limit, expectedDigest: expected,
+                    version: args.block_contract_version });
+                return { content: [{ type: 'text', text: 'Bound trial conversion block observations.' }],
+                    structuredContent: page as unknown as JsonObject };
+            } finally {
+                fs.rmSync(workDir, { recursive: true, force: true });
+            }
+        },
         async get_export_options(): Promise<AgentToolResult> {
             const options = host.options();
             const templates = host.templates();
@@ -577,36 +777,41 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 content: [{ type: 'text', text: lines.join('\n') }],
                 structuredContent: {
                     templates: templates.length,
-                    templatePaths: templates, templateFolderPath: options.templateFolderPath, markerCatalog, prefixMarkerSupport: 1,
+                    templatePaths: templates, templateFolderPath: options.templateFolderPath, markerCatalog, prefixMarkerSupport: 1, variantMarkerSupport: 1, captionFootnoteVariantSupport: 1, contextSpacerSupport: 1, decompositionSupport: 1, ...(host.renderDerived ? { deriveBundleSupport: 1 } : {}),
                     outputMode: options.outputMode,
                     overwritesExisting: !options.appendSequenceOnConflict,
                 },
             };
         },
-        async check_export(args): Promise<AgentToolResult> {
+        async check_export(args, signal): Promise<AgentToolResult> {
+            signal?.throwIfAborted();
             const notePath = normalizeNotePath(args.path);
             if (!/\.md$/i.test(notePath)) throw new ToolError('UNSUPPORTED_FORMAT', 'Markdown 노트(.md)만 내보낼 수 있다.');
             const note = await host.readNote(notePath);
+            signal?.throwIfAborted();
             if (!note) throw new ToolError('NOT_FOUND', `Vault에 이 노트가 없다: ${notePath}`, true);
-            const templates = host.templates();
-            if (templates.length === 0) {
-                throw new ToolError('NO_TEMPLATE', '템플릿 폴더에 .hwpx 템플릿이 없어 내보낼 수 없다. 사람이 플러그인 설정에서 템플릿 폴더를 정해야 한다.');
-            }
-            const template = args.template === undefined ? templates[0] : args.template;
-            if (typeof template !== 'string' || !templates.includes(template)) {
-                throw new ToolError('INVALID_ARGUMENT', `template은 다음 중 하나여야 한다: ${listed(templates)}`, true);
-            }
+            const loadedTemplate = await trialTemplate(host, notePath, args.template, signal);
+            const template = loadedTemplate.path, templates = host.templates();
+            const templateWarnings = await templateOverrideWarnings(host, notePath, args.template, signal);
 
             const options = host.options();
+            const staticCount = scanRenderableBlocks(stripObsidianComments(note.markdown), { languages: ['chart-hands-static'], includeSvgFiles: false }).length;
+            const staticAvailable = host.staticChartAvailable?.() ?? null;
+            const unboundCapture = hasUnboundThirdPartyCapture(note.markdown, options);
+            const agentExportBlocked = unboundCapture || staticCount > 10 || (staticCount > 0 && staticAvailable === false);
             const { content } = parseMarkdownStringWithFrontmatter(note.markdown);
             const shape = shapeOf(new MarkoToPandocAdapter().parse(rewriteObsidianImageEmbeds(content)));
             const remote = shape.images.filter((source) => /^[a-z][a-z0-9+.-]*:/i.test(source));
             const local = shape.images.filter((source) => !remote.includes(source));
-            const missing = local.filter((source) => !host.resolvesImage(source, notePath));
+            const missing = local.filter((source) => !source || !host.resolvesImage(source, notePath));
             const captured: string[] = [];
             const kept: string[] = [];
-            const thirdParty = new Set(options.thirdPartyLanguages.map((language) => language.toLowerCase()));
-            for (const [language, count] of shape.codeLanguages) {
+            const thirdParty = new Set(options.thirdPartyLanguages.map((language) => language.trim().toLowerCase()).filter(Boolean));
+            const renderCounts = new Map<string, number>();
+            for (const block of scanRenderableBlocks(stripObsidianComments(note.markdown), { languages: new Set(['mermaid', ...thirdParty]), includeSvgFiles: false })) {
+                renderCounts.set(block.hint, (renderCounts.get(block.hint) ?? 0) + 1);
+            }
+            for (const [language, count] of renderCounts) {
                 const capturable = language === 'mermaid'
                     ? options.captureMermaid
                     : thirdParty.has(language) && options.captureThirdPartyRenderers;
@@ -616,26 +821,54 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             }
 
             // The converter only writes files, so the trial output goes to the OS temp folder and is removed.
+            signal?.throwIfAborted();
             const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hwpx-export-check-'));
             let bytes = 0;
             let failure = '';
             let report: ConversionReport | undefined;
+            let usedTemplateSha256: string | null = null;
+            let inspection: TemplateInspection | undefined;
+            let inspectedFrozenTemplate = false;
+            let identity: ReturnType<typeof preflightIdentity> | null = null;
+            let selectionSummary: SelectionSummary | null = null;
             try {
                 const outputFile = path.join(workDir, 'check.hwpx');
-                report = (await host.convert(note.markdown, notePath, template, outputFile)) ?? undefined;
+                const noteIdentity = note.sha256 !== undefined && note.sizeBytes !== undefined
+                    ? { sha256: note.sha256, sizeBytes: note.sizeBytes } : undefined;
+                const conversion = await host.convert(note.markdown, notePath, template, outputFile, signal, noteIdentity);
+                if (conversion && 'templateSha256' in conversion) {
+                    report = conversion.report;
+                    usedTemplateSha256 = conversion.templateSha256;
+                    inspection = conversion.inspection;
+                    inspectedFrozenTemplate = true;
+                    identity = preflightIdentity({ pluginId: host.id, pluginVersion: host.version, notePath,
+                        noteSha256: note.sha256, templatePath: template, templateSha256: usedTemplateSha256,
+                        artifactId: conversion.artifactId, configDigest: conversion.configDigest,
+                        inputDependencies: conversion.inputDependencies });
+                    selectionSummary = safeSelectionSummary(conversion.selectionSummary);
+                } else {
+                    report = conversion ?? undefined;
+                }
                 bytes = fs.statSync(outputFile).size;
             } catch (error) {
+                signal?.throwIfAborted();
                 failure = error instanceof Error ? error.message : String(error);
             } finally {
                 fs.rmSync(workDir, { recursive: true, force: true });
             }
+            const preflightReport = new ConversionReportCollector();
+            preflightReport.merge(captureReport(note.markdown, options, { failures: [], contractViolation: false }));
+            if (unboundCapture) preflightReport.add('render_capture_unbound', '타사 렌더 입력을 결속할 수 없어 에이전트 저장 준비가 차단됩니다');
+            if (report) preflightReport.merge(report);
+            report = preflightReport.toJSON();
 
             // Template typos silently fall back, so they are worth an agent's attention.
-            let inspection: TemplateInspection | undefined;
-            try {
-                inspection = await host.inspectTemplate?.(template);
-            } catch {
-                inspection = undefined;
+            if (!inspectedFrozenTemplate) {
+                try {
+                    inspection = await host.inspectTemplate?.(template);
+                } catch {
+                    inspection = undefined;
+                }
             }
             const typos = (inspection?.unknownMarkers ?? []).filter((item) => item.suggestion);
 
@@ -643,20 +876,22 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             const codeBlocks = [...shape.codeLanguages.values()].reduce((sum, count) => sum + count, 0);
             const outputPath = host.outputPath(notePath);
             const notes = [
-                ...(missing.length ? [`- 그림 ${missing.length}개를 찾지 못했거나 넣을 수 없는 형식이라 글자로 대체된다: ${listed(missing)}`] : []),
+                ...templateWarnings.map((warning) => '- ' + warning.message),
+                ...(missing.length ? [`- 그림 ${missing.length}개를 찾지 못했거나 넣을 수 없는 형식이라 글자로 대체된다: ${listed(missing.map((source) => source || '(경로 없음)'))}`] : []),
                 ...(remote.length ? [`- 원격 그림 ${remote.length}개는 넣지 않고 글자로 대체된다: ${listed(remote)}`] : []),
-                ...(captured.length ? [`- 내보낼 때 그림으로 캡처된다(이 점검에서는 캡처하지 않았다): ${captured.join(', ')}`] : []),
+                ...(captured.length ? [`- 일반 내보내기에서 그림 캡처를 시도한다(이 점검에서는 캡처와 성공 여부를 확인하지 않았다): ${captured.join(', ')}`] : []),
+                ...(staticCount ? [`- 데이터 전용 차트 ${staticCount}개: 이 점검에서는 렌더링하지 않았다. ${staticAvailable === false ? 'Chart Hands 정적 렌더러가 없어 저장 준비가 차단된다.' : staticCount > 10 ? '10개 제한을 넘어 저장 준비가 차단된다.' : '저장 준비에서 Chart Hands 렌더링과 입력 검증이 필요하다.'}`] : []),
                 ...(kept.length ? [`- 캡처 설정이 꺼져 있어 코드 글자 그대로 들어간다: ${kept.join(', ')}`] : []),
                 ...(shape.rawHtml ? [`- HTML 블록 ${shape.rawHtml}개: 표(<table>) 외의 HTML은 그대로 변환되지 않을 수 있다`] : []),
                 ...(!options.appendSequenceOnConflict ? ['- 같은 이름의 파일이 있으면 덮어쓰는 설정이다'] : []),
                 // Image problems are already listed above from the note itself.
-                ...warningLines(report, ['image_missing', 'image_remote']),
+                ...warningLines(report, ['image_missing', 'image_remote', ...(kept.length ? ['render_capture_disabled'] : [])]),
                 ...(typos.length
                     ? [`- 템플릿에 오타로 보이는 marker가 있어 그 서식이 적용되지 않는다: ${listed(typos.map((item) => `${item.marker}→${item.suggestion}`))}`]
                     : []),
             ];
             const lines = [
-                `노트 ${notePath} → 내보내면 ${outputPath} (템플릿 ${template}${args.template === undefined && templates.length > 1 ? `, 템플릿 ${templates.length}개 중 첫 번째로 시험` : ''})`,
+                `노트 ${notePath} → 내보내면 ${outputPath} (템플릿 ${template}${loadedTemplate.source === 'default' && templates.length > 1 ? `, 템플릿 ${templates.length}개 중 첫 번째로 시험` : ''})`,
                 failure
                     ? `변환 시험: 실패 — ${failure}`
                     : `변환 시험: 성공 · HWPX ${bytes.toLocaleString('en-US')}바이트 (Vault에는 아무것도 만들지 않았다)`,
@@ -667,15 +902,20 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 content: [{ type: 'text', text: lines.join('\n') }],
                 structuredContent: {
                     converts: !failure,
-                    noteSha256: await host.readBytes(notePath).then(bytes => bytes ? sha256(bytes) : null),
-                    templateSha256: await host.templateHash(template),
+                    agentExportBlocked,
+                    staticCharts: { count: staticCount, rendererAvailable: staticAvailable },
+                    noteSha256: note.sha256 ?? null,
+                    templateSha256: usedTemplateSha256,
+                    conversionFingerprint: identity?.conversionFingerprint ?? null,
+                    usedInputs: identity?.usedInputs ?? null,
+                    selectionSummary,
                     outputPath,
                     template,
                     tables: shape.tables,
                     images: shape.images.length,
                     missingImages: missing.length,
                     remoteImages: remote.length,
-                    warnings: warningsJson(report),
+                    warnings: [...templateWarnings, ...warningsJson(report)],
                     templateTypos: typos.map((item) => ({ marker: item.marker, suggestion: item.suggestion ?? '' })),
                 },
                 _meta: { 'dev.agentinterop/resource': { path: notePath } },
@@ -703,14 +943,15 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 if (ctx?.signal?.aborted) throw new ToolError('CANCELLED', '호출이 취소됐다.');
                 return result;
             } catch (error) {
-                const known = error instanceof ToolError || error instanceof DeriveProviderError;
-                const code = known ? error.code : 'INTERNAL';
-                const retryable = error instanceof ToolError && error.retryable;
+                const actual = ctx?.signal?.aborted ? new ToolError('CANCELLED', '호출이 취소됐다.') : error instanceof RetiredRecordError || error instanceof DialectError ? new DeriveProviderError('INVALID_ARGUMENT', error.message, error.details) : error;
+                const known = actual instanceof ToolError || actual instanceof DeriveProviderError;
+                const code = known ? actual.code : 'INTERNAL';
+                const retryable = actual instanceof ToolError && actual.retryable;
                 return {
                     isError: true,
-                    content: [{ type: 'text', text: known ? error.message : `도구 실행 중 오류: ${error instanceof Error ? error.message : String(error)}` }],
-                    structuredContent: { code, retryable },
-                    _meta: { 'dev.agentinterop/error': { code, retryable } },
+                    content: [{ type: 'text', text: known ? actual.message : `도구 실행 중 오류: ${actual instanceof Error ? actual.message : String(actual)}` }],
+                    structuredContent: { code, retryable, ...(actual instanceof DeriveProviderError && actual.details ? { details: actual.details } : {}) },
+                    _meta: { 'dev.agentinterop/error': { code, retryable, ...(actual instanceof DeriveProviderError && actual.details ? { details: actual.details } : {}) } },
                 };
             }
         },

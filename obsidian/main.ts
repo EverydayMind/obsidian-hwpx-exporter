@@ -1,8 +1,12 @@
+import { readTemplateMode } from '../src/template-derive/templateMetadata';
+import { loadNoteTemplate, preferredTemplatePaths, assertVaultRealPath, hasNormalizedDiskPath, templateDerivedMode, TEMPLATE_MAX_BYTES, type TemplateLoaderHost } from './templateLoader';
 import type { InputDependency } from './deriveProvider';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { createHash } from 'crypto';
+import { frozenPreflight } from './frozenPreflight';
+import { PREFLIGHT_MAX_FILE_BYTES, readBoundedPreflightInput } from './preflightTemplate';
 import {
     App,
     FileView,
@@ -22,8 +26,10 @@ import {
     FileSystemAdapter,
 } from 'obsidian';
 import { convertString } from '../src/converterApi';
+import { ObservedBlockRecorder } from '../src/observedBlockIndex';
 import { ConversionConfig } from '../src/config';
-import { summarizeReport, type ConversionReport } from '../src/conversionReport';
+import { ConversionReportCollector, summarizeReport, type ConversionReport } from '../src/conversionReport';
+import { captureReport } from './captureReport';
 import { inspectTemplate, type TemplateInspection } from '../src/templateInspector';
 import { stripObsidianComments } from '../src/obsidianComments';
 import {
@@ -32,6 +38,8 @@ import {
 } from '../src/obsidianImageEmbeds';
 import { findAvailableOutputPath } from './outputPath';
 import { captureRenderableBlocks } from './svgCapture';
+import { hasUnboundThirdPartyCapture } from './agentCaptureGuard';
+import { captureStaticCharts, STATIC_CHART_API } from './staticChartCapture';
 import {
     AGENT_CAPABILITY_PROVIDER,
     PROVIDERS_CHANGED_EVENT,
@@ -358,9 +366,21 @@ export default class HWPXExporterPlugin extends Plugin {
                 thirdPartyLanguages: [...this.settings.thirdPartyLanguages],
             }),
             templates: () => this.getTemplateFilesInSelectedFolder().map((file) => file.path),
+            resolveTemplateLink: (link, notePath) => this.app.metadataCache.getFirstLinkpathDest(link, notePath)?.path ?? null,
+            assertTemplatePath: p => assertVaultRealPath(this.getFileSystemAdapter().getBasePath(), p),
+            hasPathCollision: p => hasNormalizedDiskPath(this.getFileSystemAdapter().getBasePath(), p),
+            staticChartAvailable: () => {
+                const plugins = (this.app as unknown as { plugins?: { getPlugin?(id: string): unknown } }).plugins;
+                const plugin = plugins?.getPlugin?.('chart-hands') as { [STATIC_CHART_API]?: { protocol?: string; version?: number; render?: unknown } } | null | undefined;
+                const renderer = plugin?.[STATIC_CHART_API];
+                return renderer?.protocol === 'chart-hands-static' && renderer.version === 1 && typeof renderer.render === 'function';
+            },
             readNote: async (notePath) => {
                 const file = noteFile(notePath);
-                return file ? { markdown: new TextDecoder('utf-8', { fatal: true }).decode(await this.app.vault.adapter.readBinary(file.path)) } : null;
+                if (!file) return null;
+                const absolute = path.join(this.getFileSystemAdapter().getBasePath(), file.path);
+                const bytes = readBoundedPreflightInput(absolute, PREFLIGHT_MAX_FILE_BYTES);
+                return { markdown: new TextDecoder('utf-8', { fatal: true }).decode(bytes), sha256: createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.byteLength };
             },
             outputPath: (notePath) => this.buildOutputVaultPath(requireNote(notePath)),
             exists: (vaultPath) => fs.existsSync(path.join(this.getFileSystemAdapter().getBasePath(), normalizePath(vaultPath))),
@@ -368,27 +388,31 @@ export default class HWPXExporterPlugin extends Plugin {
                 const file = noteFile(notePath);
                 return file !== null && this.resolveVaultImageAbsolutePath(source, file) !== null;
             },
-            convert: async (markdown, notePath, templatePath, outputAbsolutePath) => {
+            convert: async (markdown, notePath, templatePath, outputAbsolutePath, signal, noteIdentity, captureBlockIndex) => {
                 const file = requireNote(notePath);
                 const templateAbsolutePath = this.resolveTemplateAbsolutePath(templatePath);
                 if (!fs.existsSync(templateAbsolutePath)) {
                     throw new Error(`Template not found: ${templatePath}`);
                 }
-                return convertString(rewriteObsidianImageEmbeds(markdown), outputAbsolutePath, {
-                    referenceDoc: templateAbsolutePath,
-                    config: this.buildConversionConfig(),
-                    inputPath: path.join(this.getFileSystemAdapter().getBasePath(), file.path),
-                    imagePathResolver: (source) => this.resolveVaultImageAbsolutePath(source, file),
-                });
+                const vaultRoot = this.getFileSystemAdapter().getBasePath();
+                return frozenPreflight({ markdown, noteAbsolutePath: path.join(vaultRoot, file.path),
+                    templateAbsolutePath, outputAbsolutePath, vaultRoot, config: this.buildConversionConfig(), signal, noteIdentity, captureBlockIndex,
+                    resolveImage: (source) => this.resolveVaultImageAbsolutePath(source, file) });
             },
             inspectTemplate: (templatePath) => inspectTemplate(this.resolveTemplateAbsolutePath(templatePath)),
             // export_note (commit effect): template identity, in-memory render, and the Vault write.
             templateHash: async (templatePath) => {
                 const absolute = this.resolveTemplateAbsolutePath(templatePath);
                 if (!fs.existsSync(absolute)) throw new Error(`Template not found: ${templatePath}`);
-                return createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
+                if (!this.isListedTemplatePath(templatePath)) assertVaultRealPath(this.getFileSystemAdapter().getBasePath(), templatePath);
+                return createHash('sha256').update(readBoundedPreflightInput(absolute, TEMPLATE_MAX_BYTES)).digest('hex');
             },
-            render: (notePath, templatePath, signal) => this.renderNoteBytes(requireNote(notePath), templatePath, signal),
+            render: (notePath, templatePath, signal, captureOutputAnchors, captureBlockIndex) => this.renderNoteBytes(requireNote(notePath), templatePath, signal, captureOutputAnchors, undefined, captureBlockIndex),
+            renderDerived: async (notePath, samplePath, templateBytes, signal, captureOutputAnchors) => {
+                const result = await this.renderNoteBytes(requireNote(notePath), samplePath, signal, captureOutputAnchors, templateBytes, true, true);
+                if (!result.blockIndex) throw new Error('Derived output observations unavailable.');
+                return { ...result, blockIndex: result.blockIndex };
+            },
             missingFolders: (vaultPath) => {
                 const parts = normalizePath(vaultPath).split('/').slice(0, -1);
                 return parts
@@ -409,6 +433,11 @@ export default class HWPXExporterPlugin extends Plugin {
                 const target = normalizePath(vaultPath);
                 if (!(await this.app.vault.adapter.exists(target))) return null;
                 return new Uint8Array(await this.app.vault.adapter.readBinary(target));
+            },
+            readBytesBounded: async (vaultPath, maxBytes) => {
+                const target = normalizePath(vaultPath);
+                if (!(await this.app.vault.adapter.exists(target))) return null;
+                return readBoundedPreflightInput(path.join(this.getFileSystemAdapter().getBasePath(), target), maxBytes);
             },
         });
         Object.defineProperty(this, AGENT_CAPABILITY_PROVIDER, {
@@ -467,10 +496,27 @@ export default class HWPXExporterPlugin extends Plugin {
         return adapter;
     }
 
+    private templateLoaderHost(): TemplateLoaderHost {
+        const root = this.getFileSystemAdapter().getBasePath();
+        return {
+            templates: () => this.getTemplateFilesInSelectedFolder().map(f => f.path),
+            readNote: async p => ({ markdown: new TextDecoder('utf-8', { fatal: true }).decode(readBoundedPreflightInput(path.join(root, p), TEMPLATE_MAX_BYTES)) }),
+            readBytes: async p => new Uint8Array(await this.app.vault.adapter.readBinary(p)),
+            readBytesBounded: async (p, max) => readBoundedPreflightInput(path.join(root, p), max),
+            resolveTemplateLink: (link, note) => this.app.metadataCache.getFirstLinkpathDest(link, note)?.path ?? null,
+            assertTemplatePath: p => assertVaultRealPath(root, p),
+        };
+    }
+
     private resolveTemplateAbsolutePath(templatePath: string): string {
         const adapter = this.getFileSystemAdapter();
         const vaultRelativePath = normalizePath(templatePath.trim().replace(/^[/\\]+/, ''));
         return path.join(adapter.getBasePath(), vaultRelativePath);
+    }
+
+    private isListedTemplatePath(templatePath: string): boolean {
+        const file = this.app.vault.getAbstractFileByPath(templatePath);
+        return file instanceof TFile && this.getTemplateFilesInSelectedFolder().some(candidate => candidate.path === templatePath);
     }
 
     private buildOutputFilename(baseName: string): string {
@@ -561,9 +607,10 @@ export default class HWPXExporterPlugin extends Plugin {
 
     private async exportSingleFile(
         file: TFile,
-        templatePath: string,
+        templatePath: string | undefined,
         customOutputPath?: string
     ): Promise<{ outputPath: string; report: ConversionReport }> {
+        if (templatePath === undefined) templatePath = (await loadNoteTemplate(this.templateLoaderHost(), file.path)).path;
         const outputVaultPath = customOutputPath ? normalizePath(customOutputPath) : this.buildOutputVaultPath(file);
         const outputAbsolutePath = path.join(this.getFileSystemAdapter().getBasePath(), outputVaultPath);
         fs.mkdirSync(path.dirname(outputAbsolutePath), { recursive: true });
@@ -572,7 +619,7 @@ export default class HWPXExporterPlugin extends Plugin {
     }
 
     /** Render capture + conversion of one note into an absolute output path. */
-    private async convertNote(file: TFile, templatePath: string, outputAbsolutePath: string, frozen?: { signal?: AbortSignal; markdown: string; templateAbsolutePath: string; record(path: string, bytes: Uint8Array): void }): Promise<ConversionReport> {
+    private async convertNote(file: TFile, templatePath: string, outputAbsolutePath: string, frozen?: { signal?: AbortSignal; markdown: string; templateAbsolutePath: string; record(path: string, bytes: Uint8Array): void; selectionObserver?: ObservedBlockRecorder; splitRoleMarkerLines?: boolean }): Promise<ConversionReport> {
         const adapter = this.getFileSystemAdapter();
         const templateAbsolutePath = frozen?.templateAbsolutePath ?? this.resolveTemplateAbsolutePath(templatePath);
         if (!fs.existsSync(templateAbsolutePath)) {
@@ -581,12 +628,15 @@ export default class HWPXExporterPlugin extends Plugin {
 
         frozen?.signal?.throwIfAborted();
         const sourceMarkdown = frozen?.markdown ?? await this.app.vault.cachedRead(file);
-        if (frozen && this.settings.captureThirdPartyRenderers && this.settings.thirdPartyLanguages.some(language => sourceMarkdown.includes(`\x60\x60\x60${language}`))) throw new Error('Third-party rendered-block inputs cannot yet be completely bound for agent export.');
+        if (frozen && hasUnboundThirdPartyCapture(sourceMarkdown, this.settings)) throw new Error('Third-party rendered-block inputs cannot yet be completely bound for agent export.');
+        const plugins = (this.app as unknown as { plugins?: { getPlugin?(id: string): unknown } }).plugins;
+        const chartHands = plugins?.getPlugin?.('chart-hands') as { [STATIC_CHART_API]?: Parameters<typeof captureStaticCharts>[1] } | null | undefined;
+        const staticCharts = await captureStaticCharts(stripObsidianComments(sourceMarkdown), chartHands?.[STATIC_CHART_API], frozen?.signal);
         const captureWidthPx = this.settings.captureWidthPx > 0
             ? this.settings.captureWidthPx
             : Math.floor(new ConversionConfig().IMAGE_MAX_WIDTH_MM * 96 / 25.4);
         // Commented-out blocks are not rendered by Obsidian and would only spend the capture budget.
-        const capture = await captureRenderableBlocks(stripObsidianComments(sourceMarkdown), {
+        const capture = await captureRenderableBlocks(staticCharts.markdown, {
             app: this.app,
             sourcePath: file.path,
             captureRenderedBlocks: this.settings.captureRenderedBlocks,
@@ -611,7 +661,7 @@ export default class HWPXExporterPlugin extends Plugin {
         });
         frozen?.signal?.throwIfAborted();
         if (capture.contractViolation) {
-            new Notice('SVG capture mapping failed; original Markdown was restored.', 8000);
+            new Notice('SVG 캡처 결과를 원문에 대응시키지 못해 원래 Markdown을 유지했습니다.', 8000);
         }
         if (capture.failures.length > 0) {
             const mermaidFailures = capture.failures.filter((failure) => failure.hint === 'mermaid').length;
@@ -624,9 +674,13 @@ export default class HWPXExporterPlugin extends Plugin {
             referenceDoc: templateAbsolutePath,
             config: this.buildConversionConfig(),
             inputPath: inputAbsolutePath,
+            strictImageAssetResolver: !!frozen,
+            signal: frozen?.signal,
+            selectionObserver: frozen?.selectionObserver,
+            splitRoleMarkerLines: frozen?.splitRoleMarkerLines ?? await templateDerivedMode(readBoundedPreflightInput(templateAbsolutePath, TEMPLATE_MAX_BYTES)),
             imagePathResolver: (source) => this.resolveVaultImageAbsolutePath(source, file),
             imageAssetResolver: (source) => {
-                const asset = capture.assets.get(source);
+                const asset = staticCharts.assets.get(source) ?? capture.assets.get(source);
                 if (asset) return { bytes: asset.bytes, ext: asset.ext, displayWidthPx: asset.displayWidthPx, displayHeightPx: asset.displayHeightPx };
                 if (!frozen) return null;
                 const absolute = this.resolveVaultImageAbsolutePath(source, file);
@@ -639,18 +693,26 @@ export default class HWPXExporterPlugin extends Plugin {
                 throw new Error('Agent export currently requires PNG/JPEG/GIF or captured image bytes.');
             },
         });
-        if (report.warnings.length > 0) {
-            console.debug(`[HWPX Exporter] Conversion report for ${file.path}`, report);
+        const combined = new ConversionReportCollector();
+        combined.merge(captureReport(sourceMarkdown, this.settings, capture));
+        combined.merge(report);
+        const combinedReport = combined.toJSON();
+        if (combinedReport.warnings.length > 0) {
+            console.debug(`[HWPX Exporter] Conversion report for ${file.path}`, combinedReport);
         }
-        return report;
+        return combinedReport;
     }
 
     /** Converts into memory (OS temp folder), for the agent commit: no Vault file is written. */
     private async renderNoteBytes(
         file: TFile,
         templatePath: string,
-        signal?: AbortSignal
-    ): Promise<{ bytes: Uint8Array; report: ConversionReport; inputDependencies: InputDependency[]; providerInternalWrites: string[] }> {
+        signal?: AbortSignal,
+        captureOutputAnchors = false,
+        templateOverride?: Uint8Array,
+        captureBlockIndex = false,
+        splitRoleMarkerLines = false
+    ): Promise<{ bytes: Uint8Array; report: ConversionReport; inputDependencies: InputDependency[]; providerInternalWrites: string[]; outputAnchors?: ReturnType<ObservedBlockRecorder['outputAnchors']>; blockIndex?: ReturnType<ObservedBlockRecorder['index']> }> {
         signal?.throwIfAborted();
         const dependencies = new Map<string, string>(); let total = 0;
         const record = (vaultPath: string, bytes: Uint8Array) => {
@@ -659,16 +721,24 @@ export default class HWPXExporterPlugin extends Plugin {
             if (previous && previous !== hash) throw new Error('Export input changed while being read.');
             dependencies.set(vaultPath, hash); if (dependencies.size > 32) throw new Error('Export dependency count exceeded.');
         };
-        const noteBytes = new Uint8Array(await this.app.vault.adapter.readBinary(file.path)), templateBytes = new Uint8Array(await this.app.vault.adapter.readBinary(templatePath));
-        record(file.path, noteBytes); record(templatePath, templateBytes);
+        const noteBytes = new Uint8Array(await this.app.vault.adapter.readBinary(file.path));
+        if (!templateOverride && !this.isListedTemplatePath(templatePath)) assertVaultRealPath(this.getFileSystemAdapter().getBasePath(), templatePath);
+        const templateBytes = templateOverride ? Uint8Array.from(templateOverride) : readBoundedPreflightInput(this.resolveTemplateAbsolutePath(templatePath), TEMPLATE_MAX_BYTES);
+        const templateMode = await readTemplateMode(templateBytes, signal);
+        splitRoleMarkerLines = splitRoleMarkerLines || templateMode.derived;
+        record(file.path, noteBytes); if (!templateOverride) record(templatePath, templateBytes);
         signal?.throwIfAborted();
         const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hwpx-export-commit-'));
         try {
             const output = path.join(workDir, 'export.hwpx');
             const frozenTemplate = path.join(workDir, 'template.hwpx'); fs.writeFileSync(frozenTemplate, templateBytes);
-            const report = await this.convertNote(file, templatePath, output, { signal, markdown: new TextDecoder('utf-8', { fatal: true }).decode(noteBytes), templateAbsolutePath: frozenTemplate, record });
+            const selectionObserver = captureOutputAnchors || captureBlockIndex ? new ObservedBlockRecorder() : undefined;
+            const report = await this.convertNote(file, templatePath, output, { signal, markdown: new TextDecoder('utf-8', { fatal: true }).decode(noteBytes), templateAbsolutePath: frozenTemplate, record, selectionObserver, splitRoleMarkerLines });
             signal?.throwIfAborted();
-            return { bytes: new Uint8Array(fs.readFileSync(output)), report, inputDependencies: [...dependencies].map(([path, sha256]) => ({ path, sha256 })), providerInternalWrites: [workDir, frozenTemplate, output] };
+            const blockIndex = selectionObserver?.index();
+            return { bytes: new Uint8Array(fs.readFileSync(output)), report, inputDependencies: [...dependencies].map(([path, sha256]) => ({ path, sha256 })), providerInternalWrites: [workDir, frozenTemplate, output],
+                ...(selectionObserver && blockIndex && captureOutputAnchors ? { outputAnchors: selectionObserver.outputAnchors(blockIndex) } : {}),
+                ...(blockIndex && captureBlockIndex ? { blockIndex } : {}) };
         } finally {
             fs.rmSync(workDir, { recursive: true, force: true });
         }
@@ -759,21 +829,21 @@ export default class HWPXExporterPlugin extends Plugin {
         } catch (error) {
             console.error('[HWPX Exporter] Export failed', error);
             startNotice.hide();
-            new Notice(`HWPX export failed: ${toErrorMessage(error)}`, 8000);
+            new Notice(`HWPX 내보내기 실패: ${toErrorMessage(error)}`, 10000);
             return;
         }
 
         try {
             const openedWith = await this.openExportedFile(outputPath);
             startNotice.hide();
-            new Notice(`HWPX exported and opened in ${openedWith}: ${outputPath}`);
+            new Notice(`HWPX로 내보내고 ${openedWith}에서 열었습니다: ${outputPath}`, 6000);
             this.showConversionWarnings(report);
         } catch (error) {
             console.error('[HWPX Exporter] Opening exported file failed', error);
             startNotice.hide();
             new Notice(
-                `HWPX exported, but could not be opened: ${outputPath}. ${toErrorMessage(error)}`,
-                8000
+                `HWPX로 내보냈지만 파일을 열지 못했습니다: ${outputPath}. ${toErrorMessage(error)}`,
+                10000
             );
         }
     }
@@ -787,16 +857,17 @@ export default class HWPXExporterPlugin extends Plugin {
     private async exportCurrentNote(): Promise<void> {
         const file = this.app.workspace.getActiveFile();
         if (!file || file.extension.toLowerCase() !== 'md') {
-            new Notice('No active Markdown note to export.');
+            new Notice('내보낼 Markdown 노트를 먼저 여세요.');
             return;
         }
-        await this.exportFileAfterTemplatePrompt(file);
+        try { await this.exportFileWithNotice(file, (await loadNoteTemplate(this.templateLoaderHost(), file.path)).path); }
+        catch (error) { new Notice(`템플릿 선택 실패: ${toErrorMessage(error)}`, 10000); }
     }
 
     private async exportCurrentNoteWithTemplate(): Promise<void> {
         const file = this.app.workspace.getActiveFile();
         if (!file || file.extension.toLowerCase() !== 'md') {
-            new Notice('No active Markdown note to export.');
+            new Notice('내보낼 Markdown 노트를 먼저 여세요.');
             return;
         }
 
@@ -804,10 +875,11 @@ export default class HWPXExporterPlugin extends Plugin {
     }
 
     private async exportFileAfterTemplatePrompt(file: TFile): Promise<void> {
-        const templatePath = await this.promptTemplatePath();
-        if (templatePath) {
-            await this.exportFileWithNotice(file, templatePath);
-        }
+        try {
+            const preferred = await loadNoteTemplate(this.templateLoaderHost(), file.path);
+            const templatePath = await this.promptTemplatePath(preferred);
+            if (templatePath) await this.exportFileWithNotice(file, templatePath);
+        } catch (error) { new Notice(`템플릿 선택 실패: ${toErrorMessage(error)}`, 10000); }
     }
 
     private getMarkdownFilesInFolder(folder: TFolder): TFile[] {
@@ -819,15 +891,16 @@ export default class HWPXExporterPlugin extends Plugin {
             .sort((a, b) => a.path.localeCompare(b.path));
     }
 
-    private async exportFolderWithNotice(folder: TFolder, templatePath: string): Promise<void> {
+    private async exportFolderWithNotice(folder: TFolder, templatePath?: string): Promise<void> {
         const files = this.getMarkdownFilesInFolder(folder);
         if (files.length === 0) {
-            new Notice('No Markdown files found in the selected folder.');
+            new Notice('선택한 폴더에 Markdown 파일이 없습니다.');
             return;
         }
 
         // duration=0 keeps the notice on screen until we hide() it ourselves,
-        // right before the completion/failure notice replaces it.
+        // right before the completion/failure notice replaces it. Progress
+        // updates this one notice instead of stacking a new one per step.
         const startNotice = new Notice(`HWPX 내보내기 진행 중입니다: ${files.length}개 파일`, 0);
 
         let successCount = 0;
@@ -836,6 +909,7 @@ export default class HWPXExporterPlugin extends Plugin {
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
+            startNotice.setMessage(`HWPX 내보내기 진행 중입니다: ${i + 1}/${files.length} · ${file.basename}`);
             try {
                 const { report } = await this.exportSingleFile(file, templatePath);
                 successCount += 1;
@@ -845,10 +919,6 @@ export default class HWPXExporterPlugin extends Plugin {
                 failures.push(message);
                 console.error('[HWPX Exporter] Batch export item failed', message);
             }
-
-            if ((i + 1) % 10 === 0 || i === files.length - 1) {
-                new Notice(`HWPX exporting... ${i + 1}/${files.length}`, 1000);
-            }
         }
 
         startNotice.hide();
@@ -857,14 +927,14 @@ export default class HWPXExporterPlugin extends Plugin {
             ? ` 변환 경고가 있는 파일 ${filesWithWarnings}개(개발자 콘솔 참고).`
             : '';
         if (failures.length === 0) {
-            new Notice(`HWPX export complete: ${successCount}/${files.length} succeeded.${warningNote}`, warningNote ? 8000 : undefined);
+            new Notice(`HWPX 내보내기 완료: ${files.length}개 중 ${successCount}개 성공.${warningNote}`, warningNote ? 8000 : 5000);
             return;
         }
 
         const preview = failures.slice(0, 3).join(' | ');
         new Notice(
-            `HWPX export complete: ${successCount}/${files.length} succeeded, ${failures.length} failed. ${preview}${warningNote}`,
-            10000
+            `HWPX 내보내기 완료: ${files.length}개 중 ${successCount}개 성공, ${failures.length}개 실패. ${preview}${warningNote}`,
+            15000
         );
     }
 
@@ -877,10 +947,7 @@ export default class HWPXExporterPlugin extends Plugin {
     }
 
     private async exportFolderAfterTemplatePrompt(folder: TFolder): Promise<void> {
-        const templatePath = await this.promptTemplatePath();
-        if (templatePath) {
-            await this.exportFolderWithNotice(folder, templatePath);
-        }
+        await this.exportFolderWithNotice(folder);
     }
 
     private async promptFolder(): Promise<TFolder | null> {
@@ -889,7 +956,7 @@ export default class HWPXExporterPlugin extends Plugin {
             .sort((a, b) => a.path.localeCompare(b.path));
 
         if (folders.length === 0) {
-            new Notice('No folders are available in this vault.');
+            new Notice('이 Vault에 선택할 수 있는 폴더가 없습니다.');
             return null;
         }
 
@@ -941,10 +1008,10 @@ export default class HWPXExporterPlugin extends Plugin {
                 await this.saveSettings();
             }
             const kept = bundledTemplates.length - installed + (guideInstalled ? 0 : 1);
-            new Notice(`Installed ${installed} template(s)${guideInstalled ? ' and the template guide' : ''} in ${folder}${kept > 0 ? `; kept ${kept} existing file(s)` : ''}.`);
+            new Notice(`${folder}에 템플릿 ${installed}개${guideInstalled ? '와 작성 가이드' : ''}를 넣었습니다.${kept > 0 ? ` 이미 있던 파일 ${kept}개는 그대로 두었습니다.` : ''}`, 6000);
         } catch (error) {
             console.error('[HWPX Exporter] Template installation failed', error);
-            new Notice(`Template installation failed: ${toErrorMessage(error)}`, 8000);
+            new Notice(`템플릿 설치 실패: ${toErrorMessage(error)}`, 10000);
         }
     }
 
@@ -960,12 +1027,13 @@ export default class HWPXExporterPlugin extends Plugin {
         }
     }
 
-    async promptTemplatePath(): Promise<string | null> {
-        const templateFiles = this.getTemplateFilesInSelectedFolder();
+    async promptTemplatePath(preferred?: Awaited<ReturnType<typeof loadNoteTemplate>>): Promise<string | null> {
+        const templateFiles = preferredTemplatePaths(this.getTemplateFilesInSelectedFolder().map(f => f.path), preferred)
+            .map(p => this.app.vault.getAbstractFileByPath(p)).filter((f): f is TFile => f instanceof TFile);
 
         if (templateFiles.length === 0) {
             const folderLabel = this.settings.templateFolderPath || '/ (Vault root)';
-            new Notice(`No .hwpx templates found directly in template folder: ${folderLabel}. Run "Install bundled templates" to add the bundled ones.`, 8000);
+            new Notice(`템플릿 폴더(${folderLabel}) 바로 아래에 .hwpx 템플릿이 없습니다. 명령 팔레트의 "Install bundled templates"로 동봉 템플릿을 넣으세요.`, 10000);
             return null;
         }
 
@@ -1161,7 +1229,7 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                         'Runs registered code-block processors, including Plotly. Enable only for trusted notes.',
                         'captureThirdPartyRenderers',
                         (value) => {
-                            if (value) new Notice('Third-party renderers execute code during export. Use only with trusted notes.', 8000);
+                            if (value) new Notice('외부 렌더러는 내보내는 동안 노트 속 코드를 실행합니다. 믿을 수 있는 노트에만 쓰세요.', 10000);
                         }),
                     toggle('Force light theme', 'Apply a light theme class to the offscreen container.', 'forceLightThemeOnCapture'),
                     toggle('Aggressive light theme fallback',

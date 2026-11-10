@@ -1,4 +1,5 @@
 import { XMLParser } from 'fast-xml-parser';
+import { DOMParser } from '@xmldom/xmldom';
 import { NS, escapeRegex, findMaxAttrValue } from './xmlText';
 import type { StyleInfo, AlignValue } from '../types';
 
@@ -15,6 +16,10 @@ export class StyleRegistry {
     private maxNumberingId = 0;
     public tableBorderFillId = '1';
     private charPrCache: Map<string, number> = new Map();
+    private observedStyleCache = new Map<string, { bold: boolean; italic: boolean; height: number | null; color: string | null; fonts: Record<string, string>; ratio: Record<string, number>; spacing: Record<string, number> } | null>();
+    private observedFontCache: Map<string, string | null> | null = null;
+    private observedScriptCache = new Map<string, 'normal' | 'superscript' | 'subscript' | 'unknown'>();
+    private ambiguousCharPrIds = false;
     public readonly headerXmlRaw: string;
     private extraCharPrXml = '';
     private extraParaPrXml = '';
@@ -53,8 +58,13 @@ export class StyleRegistry {
 
             // Find max charPr / paraPr IDs
             const charPrs = findAll(this.headerXmlObj, 'hh:charPr');
+            if (charPrs.length > 4096) this.ambiguousCharPrIds = true;
+            const charPrIds = new Set<string>();
             for (const c of charPrs) {
-                const id = parseInt(attrText(c, '@_id', '0'), 10);
+                const text = attrText(c, '@_id', '');
+                if (!/^\d+$/.test(text) || charPrIds.has(text)) this.ambiguousCharPrIds = true;
+                charPrIds.add(text);
+                const id = parseInt(text || '0', 10);
                 if (id > this.maxCharPrId) this.maxCharPrId = id;
             }
             const paraPrs = findAll(this.headerXmlObj, 'hh:paraPr');
@@ -119,6 +129,7 @@ export class StyleRegistry {
                 }
             }
         } catch (e) {
+            this.ambiguousCharPrIds = true;
             console.error('[md2hwpx] Failed to parse header.xml:', e);
         }
     }
@@ -230,6 +241,86 @@ export class StyleRegistry {
         return this.propertyXml('charPr', charPrId, this.headerXmlRaw + this.extraCharPrXml);
     }
 
+    /** Unknown or ambiguous declarations must never be reported as normal. */
+    public observedScriptState(id: string): 'normal' | 'superscript' | 'subscript' | 'unknown' {
+        if (this.ambiguousCharPrIds) return 'unknown';
+        const cached = this.observedScriptCache.get(id);
+        if (cached) return cached;
+        let result: 'normal' | 'superscript' | 'subscript' | 'unknown' = 'unknown';
+        const xml = this.extractCharPrXml(id);
+        if (xml) {
+            try {
+                const doc = new DOMParser().parseFromString(`<root xmlns:hh="${NS.hh}">${xml}</root>`, 'application/xml');
+                const chars = doc.getElementsByTagNameNS(NS.hh, 'charPr');
+                const node = chars.length === 1 ? chars.item(0) : null;
+                if (node && !Array.from(node.attributes).some(attr => /^(?:supscript|superscript|subscript)$/.test(attr.localName ?? ''))) {
+                    const descendants = Array.from(node.getElementsByTagName('*')).filter(child => /^(?:supscript|superscript|subscript)$/.test(child.localName ?? ''));
+                    const direct = descendants.filter(child => child.parentNode === node && child.namespaceURI === NS.hh);
+                    if (descendants.length === direct.length && direct.length === 0) result = 'normal';
+                    else if (descendants.length === 1 && direct.length === 1) {
+                        if (direct[0].localName === 'supscript') result = 'superscript';
+                        else if (direct[0].localName === 'subscript') result = 'subscript';
+                    }
+                }
+            } catch { /* Malformed or unsupported template style remains unknown. */ }
+        }
+        this.observedScriptCache.set(id, result);
+        return result;
+    }
+
+    /** Returns true only for a measured difference; different IDs alone prove nothing. */
+    public observedCharStyleDifference(left: string, right: string): boolean | null {
+        if (this.ambiguousCharPrIds) return null;
+        const style = (id: string) => {
+            if (this.observedStyleCache.has(id)) return this.observedStyleCache.get(id) ?? null;
+            const xml = this.extractCharPrXml(id);
+            if (!xml) { this.observedStyleCache.set(id, null); return null; }
+            if (!this.observedFontCache) {
+                const fonts = new Map<string, string | null>();
+                for (const face of findAll(this.headerXmlObj, 'hh:fontface')) {
+                    const language = attrText(face, '@_lang', '').toLowerCase();
+                    for (const font of findAll(face, 'hh:font')) {
+                        const key = attrText(font, '@_id', ''), name = attrText(font, '@_face', '').normalize('NFC').trim();
+                        if (language && /^\d+$/.test(key)) {
+                            const index = `${language}/${key}`;
+                            fonts.set(index, fonts.has(index) ? null : name || null);
+                        }
+                    }
+                }
+                this.observedFontCache = fonts;
+            }
+            const rawHeight = this.charPrAttrFromXml(xml, 'height');
+            const height = rawHeight && /^\d+$/.test(rawHeight) ? Number(rawHeight) : null;
+            const rawColor = this.charPrAttrFromXml(xml, 'textColor');
+            const color = rawColor && /^#[a-f0-9]{6}$/i.test(rawColor) ? rawColor.toUpperCase() : null;
+            const ref = xml.match(/<hh:fontRef\b[^>]*\/?>/)?.[0] ?? '';
+            const fonts: Record<string, string> = {}, ratio: Record<string, number> = {}, spacing: Record<string, number> = {};
+            const ratioXml = xml.match(/<hh:ratio\b[^>]*\/?>/)?.[0] ?? '';
+            const spacingXml = xml.match(/<hh:spacing\b[^>]*\/?>/)?.[0] ?? '';
+            for (const language of ['hangul', 'latin', 'hanja', 'japanese', 'other', 'symbol', 'user']) {
+                const idMatch = ref.match(new RegExp(`\\b${language}="(\\d+)"`));
+                const name = idMatch ? this.observedFontCache.get(`${language}/${idMatch[1]}`) : undefined;
+                if (name) fonts[language] = name;
+                for (const [source, target] of [[ratioXml, ratio], [spacingXml, spacing]] as const) {
+                    const match = source.match(new RegExp(`\\b${language}="([-+]?\\d+(?:\\.\\d+)?)"`));
+                    if (match && Number.isFinite(Number(match[1]))) target[language] = Number(match[1]);
+                }
+            }
+            const value = { bold: /<hh:bold\b/.test(xml), italic: /<hh:italic\b/.test(xml), height, color, fonts, ratio, spacing };
+            this.observedStyleCache.set(id, value);
+            return value;
+        };
+        const a = style(left), b = style(right);
+        if (!a || !b) return null;
+        if (left === right) return false;
+        if (a.bold !== b.bold || a.italic !== b.italic || (a.height !== null && b.height !== null && a.height !== b.height) ||
+            (a.color !== null && b.color !== null && a.color !== b.color) ||
+            Object.keys(a.fonts).some(language => b.fonts[language] !== undefined && a.fonts[language] !== b.fonts[language]) ||
+            Object.keys(a.ratio).some(language => b.ratio[language] !== undefined && a.ratio[language] !== b.ratio[language]) ||
+            Object.keys(a.spacing).some(language => b.spacing[language] !== undefined && a.spacing[language] !== b.spacing[language])) return true;
+        return null;
+    }
+
     private propertyXml(tag: string, id: string, source: string): string | null {
         // Match the opening tag before choosing the self-closing/full branch.
         // Otherwise a self-closing definition swallows the next full definition.
@@ -271,6 +362,11 @@ export class StyleRegistry {
         let xml = existingInnerXml;
         let attrs = '';
         const deltas = this.activeFormatDeltas(formats);
+
+        if (formats.has('superscript') || formats.has('subscript')) {
+            xml = xml.replace(/<hh:(supscript|subscript)\b[^>]*\/>|<hh:(supscript|subscript)\b[^>]*>[\s\S]*?<\/hh:\2>/g, '');
+            attrs += formats.has('superscript') ? '<hh:supscript/>' : '<hh:subscript/>';
+        }
 
         if ((formats.has('bold') || deltas.some((d) => d.bold)) && !/<hh:bold\b/.test(xml)) {
             attrs += '<hh:bold/>';

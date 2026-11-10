@@ -49,7 +49,7 @@ export function getPlainText(inlines: PandocInline[]): string {
         if (item.t === 'Str') return item.c;
         if (item.t === 'Math') return item.c[1];
         if (item.t === 'Space') return ' ';
-        if (['Strong', 'Emph', 'Strikeout', 'Underline'].includes(item.t)) {
+        if (['Strong', 'Emph', 'Strikeout', 'Underline', 'Superscript', 'Subscript'].includes(item.t)) {
             return getPlainText((item as { c: PandocInline[] }).c);
         }
         if (item.t === 'Span') return getPlainText(item.c[1]);
@@ -58,7 +58,7 @@ export function getPlainText(inlines: PandocInline[]): string {
 }
 
 
-export function getPrefixComparableText(inlines: PandocInline[]): string {
+export function getPrefixComparableText(inlines: PandocInline[], includeOtherWrappers = false): string {
     let result = '';
     for (const item of inlines) {
         if (item.t === 'Str') {
@@ -69,8 +69,9 @@ export function getPrefixComparableText(inlines: PandocInline[]): string {
             result += ' ';
             continue;
         }
-        if (['Strong', 'Emph', 'Strikeout', 'Underline'].includes(item.t)) {
-            result += getPrefixComparableText((item as { c: PandocInline[] }).c);
+        if (['Strong', 'Emph', 'Strikeout', 'Underline'].includes(item.t)
+            || (includeOtherWrappers && ['Superscript', 'Subscript', 'SmallCaps'].includes(item.t))) {
+            result += getPrefixComparableText((item as { c: PandocInline[] }).c, includeOtherWrappers);
             continue;
         }
         if (item.t === 'Code') {
@@ -78,7 +79,13 @@ export function getPrefixComparableText(inlines: PandocInline[]): string {
             continue;
         }
         if (item.t === 'Link') {
-            result += getPrefixComparableText(item.c[1]);
+            result += getPrefixComparableText(item.c[1], includeOtherWrappers);
+            continue;
+        }
+        // Derived role-line splitting also crosses these formatting wrappers.
+        // Keep ordinary export prefix selection unchanged.
+        if (includeOtherWrappers && (item.t === 'Span' || item.t === 'Quoted')) {
+            result += getPrefixComparableText(item.c[1], includeOtherWrappers);
             continue;
         }
 
@@ -94,7 +101,8 @@ export function getPrefixComparableText(inlines: PandocInline[]): string {
 
 export function removePrefixComparableCharacters(
     inlines: PandocInline[],
-    charactersToRemove: number
+    charactersToRemove: number,
+    includeOtherWrappers = false
 ): PandocInline[] {
     const strip = (
         items: PandocInline[],
@@ -129,6 +137,7 @@ export function removePrefixComparableCharacters(
                 || item.t === 'Emph'
                 || item.t === 'Strikeout'
                 || item.t === 'Underline'
+                || (includeOtherWrappers && (item.t === 'Superscript' || item.t === 'Subscript' || item.t === 'SmallCaps'))
             ) {
                 const nested = strip(item.c, remaining);
                 remaining = nested.remaining;
@@ -154,6 +163,15 @@ export function removePrefixComparableCharacters(
                 remaining = nested.remaining;
                 if (nested.inlines.length > 0) {
                     result.push({ ...item, c: [item.c[0], nested.inlines, item.c[2]] });
+                }
+                continue;
+            }
+            if (includeOtherWrappers && (item.t === 'Span' || item.t === 'Quoted')) {
+                const nested = strip(item.c[1], remaining);
+                remaining = nested.remaining;
+                if (nested.inlines.length > 0) {
+                    if (item.t === 'Span') result.push({ ...item, c: [item.c[0], nested.inlines] });
+                    else result.push({ ...item, c: [item.c[0], nested.inlines] });
                 }
                 continue;
             }

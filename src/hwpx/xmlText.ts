@@ -69,9 +69,14 @@ export const HP_TEXT_OR_TAB_PATTERN = /<hp:t(?:\s[^>]*)?>([\s\S]*?)<\/hp:t>|<hp:
 
 export const TEMPLATE_RUN_TOKEN_PATTERN = /<hp:t((?:\s[^>]*)?)\/>|<hp:t((?:\s[^>]*)?)>([\s\S]*?)<\/hp:t>|<hp:[A-Za-z]+\b[^>]*\/>/g;
 
-export const ELEMENT_SENTINEL_BASE = 0xF0000;
+const ELEMENT_SENTINEL_BASE = 0x100000;
 
-export const ELEMENT_SENTINEL_PATTERN = /[\u{F0000}-\u{FFFFD}]/gu;
+function elementSentinel(index: number): string {
+    return `\u0001${String.fromCodePoint(ELEMENT_SENTINEL_BASE + index)}\u0002`;
+}
+
+// eslint-disable-next-line no-control-regex -- U+0001/U+0002 delimit the internal element sentinels
+const ELEMENT_SENTINEL_PATTERN = /\u0001([\u{100000}-\u{10FFFD}])\u0002/gu;
 
 
 export function templateTextContent(innerXml: string): string {
@@ -94,16 +99,20 @@ export function decodeTemplateElements(innerXml: string, elements: string[]): st
     return innerXml.split(/(<[^>]+>)/).map((part, index) => {
         if (index % 2 === 0) return unescapeXml(part);
         elements.push(part);
-        return String.fromCodePoint(ELEMENT_SENTINEL_BASE + elements.length - 1);
+        return elementSentinel(elements.length - 1);
     }).join('');
 }
 
 
 export function encodeTemplateText(text: string, elements: string[]): string {
-    return escapeXml(text)
-        .replace(ELEMENT_SENTINEL_PATTERN, (ch) => elements[(ch.codePointAt(0) ?? 0) - ELEMENT_SENTINEL_BASE] ?? '')
-        .replace(/\t/g, '<hp:tab/>')
-        .replace(/\n/g, '<hp:lineBreak/>');
+    let cursor = 0;
+    let xml = '';
+    const literal = (value: string): string => escapeXml(value).replace(/\t/g, '<hp:tab/>').replace(/\n/g, '<hp:lineBreak/>');
+    for (const match of text.matchAll(ELEMENT_SENTINEL_PATTERN)) {
+        xml += literal(text.slice(cursor, match.index)) + (elements[match[1].codePointAt(0)! - ELEMENT_SENTINEL_BASE] ?? '');
+        cursor = match.index + match[0].length;
+    }
+    return xml + literal(text.slice(cursor));
 }
 
 
@@ -130,7 +139,7 @@ export function decodeTemplateTextRun(
             textAttrs ??= match[1] ?? '';
         } else {
             elements.push(match[0]);
-            text += String.fromCodePoint(ELEMENT_SENTINEL_BASE + elements.length - 1);
+            text += elementSentinel(elements.length - 1);
         }
     }
     if (runInner.slice(cursor).trim() || textAttrs === null) return null;

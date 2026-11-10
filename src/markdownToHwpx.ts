@@ -1,9 +1,12 @@
+import { parseVariantMarker } from './template-derive/variantMarkers';
 /**
  * Pandoc-like AST to HWPX XML converter.
  * Uses jszip + fast-xml-parser with string-based XML generation.
  */
 
 import { TemplateScanner } from './hwpx/templateScanner';
+import { applyBodyStartControls } from './hwpx/bodyStartControls';
+import { htmlCommentsOnly } from './htmlComments';
 import { StyleRegistry } from './hwpx/styleRegistry';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -23,15 +26,20 @@ import type {
     ImageAssetResolver,
     ImagePathResolver,
 } from './types';
-import { HP_TEXT_PATTERN, OBJECT_ELEMENT_PATTERN, OBJECT_START_TAG_PATTERN, TEMPLATE_WRAPPER_END, TEMPLATE_WRAPPER_START, decodeTemplateElements, decodeTemplateTextRun, encodeTemplateText, escapeXml, findMaxAttrValue, removeOutermostElements, splitTopLevelParagraphs, stripInvalidXmlChars, templatePlainText, templateTextContent, unescapeXml } from './hwpx/xmlText';
+import { OBJECT_ELEMENT_PATTERN, OBJECT_START_TAG_PATTERN, TEMPLATE_WRAPPER_END, TEMPLATE_WRAPPER_START, decodeTemplateTextRun, encodeTemplateText, escapeXml, findMaxAttrValue, removeOutermostElements, splitTopLevelParagraphs, stripInvalidXmlChars, templatePlainText, templateTextContent, unescapeXml } from './hwpx/xmlText';
 import { ROMAN_ORDINAL, toLatinLetters, toRoman } from './hwpx/ordinals';
+import { boxSeries, BOX_SERIES, isNumberToken } from './hwpx/numberToken';
 import { figureCaption, formatMetaDate, getPlainText, getPrefixComparableText, metaValueToText, removePrefixComparableCharacters } from './hwpx/inlineText';
+import { splitRoleMarkerLines } from './splitRoleMarkerLines';
+import { classifyMetaParagraphs } from './classifyMetaParagraphs';
 import { NUMERIC_CELL, contentColumnWidths } from './hwpx/tableLayout';
 import { extractParagraphStartTag, readTemplate, replaceParagraphAttr, stripTemplateWrapperMarkers, writeHwpxOutput } from './hwpx/packaging';
 import { readImagePixelSize, imageBinaryExtension } from './imageDimensions';
 import { ConversionReportCollector, type ConversionReport } from './conversionReport';
-import { normalizeTemplateMarkers, optionFlag, type MarkerOptions } from './templateMarkers';
+import { invalidStyleVariantMarkers, normalizeTemplateMarkers, optionFlag, type MarkerOptions } from './templateMarkers';
+import { blockRole, spaceKey, spaceMarkerParts } from './contextSpacers';
 import { latexMathToUnicode } from './latexSymbols';
+import { cellSelectionFact, containerSelectionFact, emittedTextObservation, selectionFact, tableSelectionFact, type SelectionFact, type SelectionObserver } from './selectionObservation';
 
 type ActiveFormats = Set<string>;
 
@@ -200,6 +208,8 @@ export class MarkdownToHwpx {
     private inputDir: string | null = null;
     private imagePathResolver?: ImagePathResolver;
     private imageAssetResolver?: ImageAssetResolver;
+    private strictImageAssetResolver: boolean;
+    private selectionObserver?: SelectionObserver;
     private availableWidthStack: number[] = [];
 
     /** Width left for content: the innermost container, else the template page's text width (plan 2.3). */
@@ -223,7 +233,8 @@ export class MarkdownToHwpx {
     private warnedMissingTableRuleTemplate = false;
 
     // Header counters for auto-numbering
-    private headerCounters: Record<number, number> = {};
+    private keyCounters = new Map<string, number>();
+    private ancestorKeys: Record<number, string> = {};
     private hasEmittedBlock = false;
 
     // Images
@@ -245,6 +256,7 @@ export class MarkdownToHwpx {
     private markerOptions = new Map<string, MarkerOptions>();
     /** Variant chosen by <!-- hwpx:style=… --> (or a callout name) for the block being rendered. */
     private styleVariant: string | null = null;
+    private autoMetaVariant = false;
     /** Callout type → quote style key, from {{QUOTE_*|callouts=…}} (overrides CALLOUT_QUOTE_TYPES). */
     private calloutAliases = new Map<string, string>();
     /** Emoji lists from {{QUOTE_*|emoji=…}}, checked before QUOTE_EMOJI_TYPES. */
@@ -253,6 +265,12 @@ export class MarkdownToHwpx {
     private leadQuoteVariant: string | null = null;
     /** 0-based list level that top-level lists start at, from the last heading's {{Hn|list=…}}. */
     private listStartLevel = 0;
+    /** {{SPACE:rule:previous}} rules: raw blank paragraphs drawn above the marker ('' = none). */
+    private contextSpacers = new Map<string, { leading: string; style: PlaceholderStyle }>();
+    /** Role of the top-level block before the one being rendered, consumed by its first marker render. */
+    private contextPrevious: string | null = null;
+    /** Rule key that rendered the current top-level block, when a marker rule did. */
+    private contextRendered: string | null = null;
     private figureCounter = 0;
     private tableCaptionCounter = 0;
 
@@ -263,7 +281,10 @@ export class MarkdownToHwpx {
         inputPath: string | null = null,
         config: ConversionConfig | null = null,
         imagePathResolver?: ImagePathResolver,
-        imageAssetResolver?: ImageAssetResolver
+        imageAssetResolver?: ImageAssetResolver,
+        strictImageAssetResolver = false,
+        selectionObserver?: SelectionObserver,
+        private readonly splitRoleMarkers = false
     ) {
         this.ast = jsonAst;
         this.headerXmlContent = headerXmlContent;
@@ -271,6 +292,8 @@ export class MarkdownToHwpx {
         this.config = config ?? DEFAULT_CONFIG;
         this.imagePathResolver = imagePathResolver;
         this.imageAssetResolver = imageAssetResolver;
+        this.strictImageAssetResolver = strictImageAssetResolver;
+        this.selectionObserver = selectionObserver;
 
         if (inputPath) {
             this.inputDir = path.dirname(path.resolve(inputPath));
@@ -281,12 +304,20 @@ export class MarkdownToHwpx {
         // Template-side {{META:*}} (rule fragments, fixed regions, header/footer)
         // is filled before anything reads the template; note text is untouched.
         this.sectionXmlContent = this.substituteMetaMarkers(this.sectionXmlContent);
+        for (const { marker } of invalidStyleVariantMarkers(this.sectionXmlContent)) {
+            this.report.add('style_variant_name_invalid',
+                '변형 이름에 공백이 있어 이 규칙을 쓰지 않는다. 공백 대신 `_`를 쓴 이름으로 바꾼다', marker);
+        }
         // {{KIND|option=value}}: options go to a side table, markers back to their plain form.
         const markers = normalizeTemplateMarkers(this.sectionXmlContent);
         this.sectionXmlContent = markers.xml;
         this.markerOptions = markers.options;
         for (const marker of markers.unknownOptions) {
             this.report.add('template_option_unknown', '템플릿 marker의 알 수 없는 옵션을 무시함', marker);
+        }
+        const tableBreak = this.markerOptions.get('{{TABLE}}')?.pageBreak;
+        if (tableBreak !== undefined && (typeof tableBreak !== 'string' || !/^(?:cell|table)$/i.test(tableBreak))) {
+            this.report.add('template_option_unknown', '표 쪽 나눔 옵션을 무시하고 템플릿 설정을 사용함', `TABLE|pageBreak=${tableBreak}`);
         }
         this.styles = new StyleRegistry(this.headerXmlContent);
         if (this.sectionXmlContent) {
@@ -296,6 +327,11 @@ export class MarkdownToHwpx {
             ) + 1;
             this.fieldIdCounter = findMaxAttrValue(this.sectionXmlContent, /<hp:fieldBegin\b[^>]*\bid="(\d+)"/g) + 1;
             this.loadPlaceholderStyles();
+        }
+        if (splitRoleMarkers) {
+            this.ast = splitRoleMarkerLines(this.ast, this.prefixPlaceholderRules
+                .filter(rule => rule.kind === 'literal').map(rule => rule.token));
+            this.ast = classifyMetaParagraphs(this.ast);
         }
     }
 
@@ -332,7 +368,11 @@ export class MarkdownToHwpx {
             mode: this.tableRuleTemplate ? 'rule_table' : this.directTableTemplate ? 'direct_table' : undefined,
             paraPrIDRef: style.paraPrIDRef, charPrIDRef: style.charPrIDRef, styleIDRef: style.styleIDRef,
         }));
-        return [...blocks, ...headingNumbers, ...prefixes, ...lists, ...cells];
+        const spacers = [...this.contextSpacers].map(([key, { style }]) => ({
+            marker: `{{SPACE:${key.split('\n').map(part => part.replace(':', '/')).join(':')}}}`, kind: 'block' as const, mode: 'context_spacer',
+            paraPrIDRef: style.paraPrIDRef, charPrIDRef: style.charPrIDRef, styleIDRef: style.styleIDRef,
+        }));
+        return [...blocks, ...headingNumbers, ...prefixes, ...lists, ...cells, ...spacers];
     }
 
     // ============================================================
@@ -351,26 +391,44 @@ export class MarkdownToHwpx {
         jsonAst: PandocAST,
         config: ConversionConfig | null = null,
         imagePathResolver?: ImagePathResolver,
-        imageAssetResolver?: ImageAssetResolver
+        imageAssetResolver?: ImageAssetResolver,
+        strictImageAssetResolver = false,
+        sourceTextProvided = false,
+        signal?: AbortSignal,
+        selectionObserver?: SelectionObserver,
+        splitRoleMarkers = false
     ): Promise<ConversionReport> {
         const cfg = config ?? DEFAULT_CONFIG;
 
-        MarkdownToHwpx.validateInputs(inputPath, referencePath, jsonAst, cfg);
+        signal?.throwIfAborted();
+        MarkdownToHwpx.validateInputs(inputPath, referencePath, jsonAst, cfg, sourceTextProvided);
 
         const { headerXml, sectionXml, refDocBytes } =
             await readTemplate(referencePath);
+        signal?.throwIfAborted();
 
         const converter = new MarkdownToHwpx(
-            jsonAst, headerXml, sectionXml, inputPath, cfg, imagePathResolver, imageAssetResolver
+            jsonAst, headerXml, sectionXml, inputPath, cfg, imagePathResolver, imageAssetResolver, strictImageAssetResolver, selectionObserver, splitRoleMarkers
         );
-        const {
-            xmlBody, newHeaderXml, templateSectionXml, keepFirstParagraph,
-        } = converter.convert();
+        // Rules are resolved and the optional AST transform is complete. Observe
+        // the exact objects the renderer will use, including list continuations.
+        selectionObserver?.begin?.(converter.ast);
+        let converted: ReturnType<MarkdownToHwpx['convert']>;
+        try {
+            converted = converter.convert();
+        } catch (error) {
+            signal?.throwIfAborted();
+            throw error;
+        }
+        const { xmlBody, newHeaderXml, templateSectionXml, keepFirstParagraph } = converted;
+        signal?.throwIfAborted();
 
         await writeHwpxOutput(
             outputPath, refDocBytes, xmlBody, newHeaderXml,
             converter.images, converter.title, inputPath,
-            templateSectionXml, keepFirstParagraph
+            templateSectionXml, keepFirstParagraph, signal, selectionObserver?.finishSectionOutput?.bind(selectionObserver),
+            selectionObserver?.finishArchiveOutput?.bind(selectionObserver),
+            selectionObserver?.recordFirstParagraphMerge?.bind(selectionObserver)
         );
         return converter.report.toJSON();
     }
@@ -383,7 +441,8 @@ export class MarkdownToHwpx {
         inputPath: string | null,
         referencePath: string,
         jsonAst: PandocAST,
-        config: ConversionConfig
+        config: ConversionConfig,
+        sourceTextProvided: boolean
     ): void {
         if (!fs.existsSync(referencePath)) {
             throw new TemplateError(`Reference template not found: ${referencePath}`);
@@ -391,9 +450,9 @@ export class MarkdownToHwpx {
         if (!jsonAst) {
             throw new ConversionError('jsonAst parameter is required');
         }
-        // inputPath may name a note that only exists in memory (convertString);
-        // its text size is checked by the caller.
-        if (inputPath !== null && fs.existsSync(inputPath)) {
+        // convertString has already checked its actual text bytes. Only the
+        // legacy AST entry point validates a separately supplied source file.
+        if (!sourceTextProvided && inputPath !== null && fs.existsSync(inputPath)) {
             const inputSize = fs.statSync(inputPath).size;
             if (inputSize > config.MAX_INPUT_FILE_SIZE) {
                 throw new SecurityError(`Input file too large: ${inputSize} bytes`);
@@ -502,6 +561,16 @@ export class MarkdownToHwpx {
             const style = this.extractHeaderPlaceholderStyle(sectionXml, `{{${name}}}`);
             if (style) this.placeholderStyles[name] = style;
         }
+        const spaceMarkers = /\{\{(SPACE:[^{}<>\r\n]{1,65})\}\}/g;
+        for (const match of sectionXml.matchAll(spaceMarkers)) {
+            const parts = spaceMarkerParts(match[1]);
+            const style = parts && this.extractGeneralPlaceholderStyle(sectionXml, match[0], match.index);
+            const owner = style?.markerOwnerParagraph;
+            const para = owner ? this.findEnclosingParagraph(owner, owner.indexOf(match[0])) : null;
+            if (!parts || !style || !owner || !para) continue;
+            const key = spaceKey(parts.rule, parts.previous);
+            if (!this.contextSpacers.has(key)) this.contextSpacers.set(key, { leading: owner.slice(0, para.paraStart).trim(), style });
+        }
         // Further quote kinds ({{QUOTE_NOTE}}) and template callout/emoji aliases:
         // {{QUOTE_WARN|callouts=warning,caution|emoji=⚠️,❗}} (plan 3.3).
         for (const match of sectionXml.matchAll(/\{\{(QUOTE_[A-Z0-9]+)\}\}/g)) {
@@ -530,20 +599,31 @@ export class MarkdownToHwpx {
 
         // Named variants (plan 3.6): {{BODY:요약}}, {{H2:부록}}, {{QUOTE:주의}}, {{CODE:작게}}.
         // A numbered-heading rule such as {{H2:1.}} is not a variant.
-        for (const match of sectionXml.matchAll(/\{\{((?:H[1-9]|BODY|CODE|QUOTE|HR):([^{}:|<>\r\n]+))\}\}/g)) {
+        for (const match of sectionXml.matchAll(/\{\{((?:H[1-9]|BODY|CODE|QUOTE|HR):([^{}:|<>\s]+))\}\}/g)) {
             const [ph, key, variant] = match;
-            if (this.placeholderStyles[key] || /^(?:1(?:\.1)*[.)]?|\(1(?:\.1)*\))$/.test(variant)) continue;
+            if (!parseVariantMarker(key) || this.placeholderStyles[key] || /^(?:1(?:\.1)*[.)]?|\(1(?:\.1)*\))$/.test(variant)) continue;
             const style = key.startsWith('H')
                 ? this.extractHeaderPlaceholderStyle(sectionXml, ph)
                 : this.extractGeneralPlaceholderStyle(sectionXml, ph, match.index);
             if (style) this.placeholderStyles[key] = style;
         }
+        // Optional caption and footnote variants are opt-in: templates without
+        // the exact marker retain their existing rendering and diagnostics.
+        for (const match of sectionXml.matchAll(/\{\{((?:CAPTION|TABLE_CAPTION|FOOTNOTE):([^{}:|<>\s]+))\}\}/g)) {
+            const [ph, key] = match;
+            if (!parseVariantMarker(key) || this.placeholderStyles[key]) continue;
+            const style = key.startsWith('FOOTNOTE:')
+                ? this.extractGeneralPlaceholderStyle(sectionXml, ph, match.index)
+                : this.extractHeaderPlaceholderStyle(sectionXml, ph);
+            if (style) this.placeholderStyles[key] = style;
+        }
         // {{QUOTE:요약|lead}}: quotes before any body block (a report's summary box) use this variant.
         for (const [marker, options] of this.markerOptions) {
-            const variant = /^\{\{QUOTE:([^{}:|]+)\}\}$/.exec(marker)?.[1];
+            const variant = /^\{\{QUOTE:([^{}:|\s]+)\}\}$/.exec(marker)?.[1];
             if (variant && options.lead && this.placeholderStyles[`QUOTE:${variant}`]) this.leadQuoteVariant = variant;
         }
-        for (const match of sectionXml.matchAll(/\{\{CELL_([A-Z_]+:[^{}:|<>\r\n]+)\}\}/g)) {
+        for (const match of sectionXml.matchAll(/\{\{CELL_([A-Z_]+:[^{}:|<>\s]+)\}\}/g)) {
+            if (!parseVariantMarker(`CELL_${match[1]}`)) continue;
             const style = this.extractCellStyle(sectionXml, match[0]);
             if (style) this.cellStyles[match[1]] = style;
         }
@@ -581,40 +661,50 @@ export class MarkdownToHwpx {
             if (!style) continue;
 
             this.cellStyles[key] = style;
-            if (this.tableRuleTemplate === null) {
-                const ruleFragment = this.findSingleCellRuleTemplateFragment(sectionXml, sectionXml.indexOf(ph), ph);
-                if (ruleFragment) {
-                    const ownerParagraph = this.findEnclosingParagraph(sectionXml, ruleFragment.tableStart);
-                    if (ownerParagraph) {
-                        this.tableRuleTemplate = {
-                            ownerParagraphXml: ownerParagraph.paraXml,
-                            markerTableXml: ruleFragment.tableXml,
-                            contentXml: ruleFragment.contentXml,
-                        };
-                    }
+            this.registerCellRuleContext(sectionXml, ph);
+        }
+        // Prefer base rules when present, but retain table geometry and wrapper
+        // context when the template defines named CELL_* variants only.
+        for (const match of sectionXml.matchAll(/\{\{CELL_([A-Z_]+:[^{}:|<>\s]+)\}\}/g)) {
+            if (this.cellStyles[match[1]]) this.registerCellRuleContext(sectionXml, match[0]);
+        }
+    }
+
+    private registerCellRuleContext(sectionXml: string, placeholder: string): void {
+        const position = sectionXml.indexOf(placeholder);
+        if (this.tableRuleTemplate === null) {
+            const ruleFragment = this.findSingleCellRuleTemplateFragment(sectionXml, position, placeholder);
+            if (ruleFragment) {
+                const ownerParagraph = this.findEnclosingParagraph(sectionXml, ruleFragment.tableStart);
+                if (ownerParagraph) {
+                    this.tableRuleTemplate = {
+                        ownerParagraphXml: ownerParagraph.paraXml,
+                        markerTableXml: ruleFragment.tableXml,
+                        contentXml: ruleFragment.contentXml,
+                    };
                 }
             }
-            const tableCtx = this.findEnclosingTable(sectionXml, sectionXml.indexOf(ph));
-            if (tableCtx) {
-                if (this.directTableTemplate === null) {
-                    const ownerParagraph = this.findEnclosingParagraph(sectionXml, tableCtx.tableStart);
-                    if (ownerParagraph) {
-                        this.directTableTemplate = {
-                            ownerParagraphXml: ownerParagraph.paraXml,
-                            tableStart: tableCtx.tableStart - ownerParagraph.paraStart,
-                            tableEnd: tableCtx.tableEnd - ownerParagraph.paraStart,
-                        };
-                    }
+        }
+        const tableCtx = this.findEnclosingTable(sectionXml, position);
+        if (tableCtx) {
+            if (this.directTableTemplate === null) {
+                const ownerParagraph = this.findEnclosingParagraph(sectionXml, tableCtx.tableStart);
+                if (ownerParagraph) {
+                    this.directTableTemplate = {
+                        ownerParagraphXml: ownerParagraph.paraXml,
+                        tableStart: tableCtx.tableStart - ownerParagraph.paraStart,
+                        tableEnd: tableCtx.tableEnd - ownerParagraph.paraStart,
+                    };
                 }
-                if (this.templateTableWidth === null) {
-                    this.templateTableWidth = this.extractTableWidth(tableCtx.tableXml);
-                }
-                if (this.templateTableBorderFillId === null) {
-                    this.templateTableBorderFillId = this.extractTableBorderFillId(tableCtx.tableXml);
-                }
-                if (this.tableLayoutTemplate === null) {
-                    this.tableLayoutTemplate = this.extractTableLayoutTemplate(tableCtx.tableXml);
-                }
+            }
+            if (this.templateTableWidth === null) {
+                this.templateTableWidth = this.extractTableWidth(tableCtx.tableXml);
+            }
+            if (this.templateTableBorderFillId === null) {
+                this.templateTableBorderFillId = this.extractTableBorderFillId(tableCtx.tableXml);
+            }
+            if (this.tableLayoutTemplate === null) {
+                this.tableLayoutTemplate = this.extractTableLayoutTemplate(tableCtx.tableXml);
             }
         }
     }
@@ -917,15 +1007,9 @@ export class MarkdownToHwpx {
     }
 
     private findTableNumberingText(tableXml: string, placeholder: string): string | null {
-        for (const match of tableXml.matchAll(HP_TEXT_PATTERN)) {
-            const text = templateTextContent(match[2] ?? '').trim();
-            if (!text) continue;
-            if (text.includes(placeholder)) continue;
-            if (/\{\{[A-Z0-9_]+\}\}/.test(text)) continue;
-            // Labels such as "장" sit next to the number cell; only a text the
-            // counter can rewrite is the heading number.
-            if (this.formatCounterText(text, 2) === text) continue;
-            return text;
+        for (const cell of this.scanner(tableXml).model.elements.filter(element => element.tag === 'hp:tc')) {
+            const text = templatePlainText(cell.xml).trim();
+            if (!text.includes(placeholder) && isNumberToken(text)) return text;
         }
         return null;
     }
@@ -988,7 +1072,9 @@ export class MarkdownToHwpx {
             suffix,
             suffixCharPrIDRef,
             leadingEmptyParagraph: leadingEmpty,
-            markerOwnerParagraph: ruleFragment?.contentXml ?? null,
+            // Preserve switch compatibility structure and individual counter prefix runs.
+            markerOwnerParagraph: ruleFragment?.contentXml ??
+                (paraCtx.paraXml.includes('<hp:switch') || (this.counterTokens(prefix).length && paraCtx.paraXml.slice(0, paraCtx.paraXml.indexOf(placeholder)).includes('</hp:run>')) ? paraCtx.paraXml : null),
             numberingText: null,
         };
     }
@@ -1246,13 +1332,26 @@ export class MarkdownToHwpx {
 
         // Until the first body block, plain quotes take the {{QUOTE:…|lead}} variant (headings don't count).
         let beforeBody = true;
+        // Role of the previous top-level block, for {{SPACE:rule:previous}} spacing.
+        let previousRole = 'START';
         blocks.forEach((block, index) => {
+            if (block.t === 'RawBlock' && block.c[0] === 'html' && htmlCommentsOnly(block.c[1])) return;
             const caption = this.tableCaptionAt(blocks, index);
             const lead = beforeBody && !caption && block.t === 'BlockQuote' && this.leadQuoteVariant;
             if (!lead && block.t !== 'Header') beforeBody = false;
-            const xml = caption
-                ? this.renderCaption('TABLE_CAPTION', caption, ++this.tableCaptionCounter)
+            // Only a top-level paragraph or heading takes a context spacer; its first marker render consumes it.
+            this.contextPrevious = !caption && (['Para', 'Plain', 'Header'].includes(block.t) || (block.t === 'Div' && block.c[0][1].includes('hwpx-style'))) ? previousRole : null;
+            this.contextRendered = null;
+            let xml = caption
+                ? this.withStyleVariant(caption.variant, () => this.observedCaption(caption.source, 'TABLE_CAPTION', 'source',
+                    this.renderCaption('TABLE_CAPTION', caption.inlines, ++this.tableCaptionCounter)))
                 : lead ? this.withStyleVariant(lead, () => this.processBlock(block)) : this.processBlock(block);
+            if (block.t === 'Table') {
+                const spacing = this.contextSpacers.get(spaceKey('TABLE', previousRole));
+                if (xml && spacing?.leading) xml = this.cloneTemplateParagraph(spacing.leading) + '\n' + xml;
+            }
+            this.contextPrevious = null;
+            if (!caption) previousRole = this.contextRendered ?? blockRole(block);
             if (xml) {
                 bodyParts.push(xml);
                 this.hasEmittedBlock = true;
@@ -1268,7 +1367,9 @@ export class MarkdownToHwpx {
             newHeaderXml = this.styles.injectIntoHeaderXml(this.headerXmlContent);
         }
 
-        const body = bodyParts.join('\n');
+        const start = applyBodyStartControls(this.sectionXmlContent, bodyParts.join('\n'));
+        if (start.unused) this.report.add('body_start_controls_unused', '본문이 비어 본문 시작 컨트롤을 붙이지 않음', undefined, start.unused);
+        const body = start.body;
         return {
             xmlBody: layout ? [layout.before, body, layout.after].filter(Boolean).join('\n') : body,
             newHeaderXml,
@@ -1292,7 +1393,8 @@ export class MarkdownToHwpx {
         const anchor = paragraphs.findIndex((para) => templatePlainText(para).includes('{{CONTENT}}'));
         if (anchor === -1) return null;
 
-        const isRule = (para: string): boolean => /\{\{[^{}<>\r\n]{1,40}\}\}/.test(para);
+        const isRule = (para: string): boolean => /\{\{[^{}<>\r\n]{1,40}\}\}/.test(para) ||
+            invalidStyleVariantMarkers(para).length > 0;
         const isBlank = (para: string): boolean =>
             templatePlainText(para).replace(/\u00A0/g, ' ').trim() === '' && !OBJECT_ELEMENT_PATTERN.test(para);
         const keep = (list: string[]): string[] => {
@@ -1353,11 +1455,12 @@ export class MarkdownToHwpx {
                 if (block.c[0][1].includes('hwpx-style')) {
                     const variant = block.c[0][2].find(([key]) => key === 'style')?.[1] ?? null;
                     return this.withStyleVariant(variant, () =>
-                        block.c[1].map((child) => this.processBlock(child)).filter((xml) => xml).join('\n') || null);
+                        block.c[1].map((child) => this.processBlock(child)).filter((xml) => xml).join('\n') || null,
+                        variant === 'META' && block.c[0][2].some(([key, value]) => key === 'auto' && value === 'meta'));
                 }
                 return block.c[1].map((child) => this.processBlock(child)).filter((xml) => xml).join('\n') || null;
             case 'HorizontalRule':
-                return this.handleHorizontalRule();
+                return this.handleHorizontalRule(block);
             default:
                 return null;
         }
@@ -1412,9 +1515,29 @@ export class MarkdownToHwpx {
         return null;
     }
 
+    private observedSelection(target: object, input: Parameters<typeof selectionFact>[0], result: string, footnoteContentXml?: string): string {
+        if (this.selectionObserver) {
+            let text = this.selectionObserver.shouldCaptureText?.() === false
+                ? { state: 'unavailable' as const, reason: 'not_observed' as const }
+                : emittedTextObservation(footnoteContentXml ?? result, input.kind === 'cell_paragraph',
+                    (left, right) => this.styles.observedCharStyleDifference(left, right),
+                    (id) => this.styles.observedScriptState(id));
+            if (footnoteContentXml !== undefined && text.state === 'observed')
+                text = { ...text, basis: 'footnote_content_xml_text' };
+            const fact = selectionFact({ ...input, text });
+            this.selectionObserver.record(target, fact);
+            this.selectionObserver.recordParagraphOutput?.(fact, result);
+        }
+        return result;
+    }
+
     private handleHeader(content: [number, unknown, PandocInline[]]): string {
         const level = content[0];
         let inlines = content[2];
+        const base = `H${level}`;
+        const prefixResult = (result: string, prefix: { kind: 'literal' | 'number' | 'number-period' | 'heading_number'; marker: string }) =>
+            this.observedSelection(content[2], { kind: 'heading', base, requestedVariant: this.styleVariant,
+                appliedKey: null, prefix, variantConsidered: false, fallbackSource: 'none', fallbacks: [] }, result);
 
         // Page break before H1 by config; {{Hn|pageBreak}} / {{Hn|pageBreak=no}} decide per level.
         let pageBreak = 0;
@@ -1433,14 +1556,19 @@ export class MarkdownToHwpx {
         const listOption = Number(this.markerOptions.get(`{{H${level}}}`)?.list);
         this.listStartLevel = Number.isInteger(listOption) && listOption >= 1 ? Math.min(listOption, 7) - 1 : 0;
 
-        for (const childLevel of Object.keys(this.headerCounters).map((value) => parseInt(value, 10))) {
-            if (childLevel > level) {
-                delete this.headerCounters[childLevel];
+        const nextCounter = (key: string): number => {
+            for (const depth of Object.keys(this.ancestorKeys).map(Number)) {
+                if (depth >= level) delete this.ancestorKeys[depth];
             }
-        }
-
-        this.headerCounters[level] = (this.headerCounters[level] ?? 0) + 1;
-        const counter = this.headerCounters[level];
+            for (const existing of this.keyCounters.keys()) {
+                const depth = Number(/^H([1-9])/.exec(existing)?.[1]);
+                if (depth > level) this.keyCounters.delete(existing);
+            }
+            const count = (this.keyCounters.get(key) ?? 0) + 1;
+            this.keyCounters.set(key, count);
+            this.ancestorKeys[level] = key;
+            return count;
+        };
 
         const comparableText = getPrefixComparableText(inlines);
         for (const rule of this.headingPrefixRules) {
@@ -1451,14 +1579,15 @@ export class MarkdownToHwpx {
                 (comparableText.slice(match[0].length).match(/^\s*/)?.[0].length ?? 0);
             const contentInlines = rule.strip
                 ? removePrefixComparableCharacters(inlines, prefixLength) : inlines;
+            const counter = nextCounter(rule.marker.slice(2, -2));
             const rendered = this.renderMarkerOwnerParagraph(
                 contentInlines, rule.marker, rule.style, pageBreak, counter
             );
-            if (rendered) return rendered;
+            if (rendered) return prefixResult(rendered, { kind: 'heading_number', marker: rule.marker });
             if (rule.style.mode === 'table') {
-                return this.handleHeaderInTable(contentInlines, rule.marker, rule.style, pageBreak, counter);
+                return prefixResult(this.handleHeaderInTable(contentInlines, rule.marker, rule.style, pageBreak, counter), { kind: 'heading_number', marker: rule.marker });
             }
-            return this.handleHeaderStyled(contentInlines, rule.style, pageBreak, counter);
+            return prefixResult(this.handleHeaderStyled(contentInlines, rule.style, pageBreak, counter), { kind: 'heading_number', marker: rule.marker });
         }
 
         const attr = content[1] as PandocAttr | undefined;
@@ -1473,6 +1602,7 @@ export class MarkdownToHwpx {
             );
             if (prefixMatch) {
                 const prefixRule = prefixMatch.rule;
+                const counter = nextCounter(prefixRule.marker.slice(2, -2));
                 const contentInlines = prefixRule.kind === 'literal'
                     ? removePrefixComparableCharacters(inlines, prefixMatch.inlinePrefixLength)
                     : inlines;
@@ -1484,32 +1614,39 @@ export class MarkdownToHwpx {
                     counter
                 );
                 if (renderedFromMarkerOwner) {
-                    return renderedFromMarkerOwner;
+                    return prefixResult(renderedFromMarkerOwner, { kind: prefixRule.kind, marker: prefixRule.marker });
                 }
                 if (prefixRule.style.mode === 'table') {
-                    return this.handleHeaderInTable(
+                    return prefixResult(this.handleHeaderInTable(
                         contentInlines,
                         prefixRule.marker,
                         prefixRule.style,
                         pageBreak,
                         counter
-                    );
+                    ), { kind: prefixRule.kind, marker: prefixRule.marker });
                 }
-                return this.handleHeaderStyled(contentInlines, prefixRule.style, pageBreak, counter);
+                return prefixResult(this.handleHeaderStyled(contentInlines, prefixRule.style, pageBreak, counter), { kind: prefixRule.kind, marker: prefixRule.marker });
             }
         }
 
         // Check placeholder styles first
-        const phKey = `H${level}` in this.placeholderStyles
-            ? this.variantKey(`H${level}`, this.placeholderStyles)
-            : `H${level}`;
+        const phKey = this.variantKey(base, this.placeholderStyles);
         const phMarker = `{{${phKey}}}`;
-        if (phKey in this.placeholderStyles) {
+        const hasMarker = phKey in this.placeholderStyles;
+        const counter = nextCounter(hasMarker ? phKey : base);
+        const finish = (result: string) => this.observedSelection(content[2], {
+            kind: 'heading', base, requestedVariant: this.styleVariant, appliedKey: hasMarker ? phKey : null,
+            variantConsidered: true,
+            fallbackSource: hasMarker ? 'none' : level in this.styles.dynamicStyleMap ? 'dynamic_heading' : 'normal',
+            fallbacks: [...(this.styleVariant && phKey === base ? ['variant_missing' as const] : []),
+                ...(!hasMarker ? ['marker_missing' as const] : [])],
+        }, result);
+        if (hasMarker) {
             const props = this.placeholderStyles[phKey];
             // {{H3|num=%1.%2.%3.}}: %n is the running counter of level n.
             const numFormat = this.markerOptions.get(phMarker)?.num;
             if (typeof numFormat === 'string') {
-                const numberText = numFormat.replace(/%([1-9])/g, (_m, n: string) => String(this.headerCounters[Number(n)] ?? 0));
+                const numberText = numFormat.replace(/%([1-9])/g, (_m, n: string) => String(Number(n) > level ? 0 : this.keyCounters.get(this.ancestorKeys[Number(n)]) ?? 0));
                 inlines = [{ t: 'Str', c: numberText }, { t: 'Space' }, ...inlines];
             }
             const renderedFromMarkerOwner = this.renderMarkerOwnerParagraph(
@@ -1520,35 +1657,35 @@ export class MarkdownToHwpx {
                 counter
             );
             if (renderedFromMarkerOwner) {
-                return renderedFromMarkerOwner;
+                return finish(renderedFromMarkerOwner);
             }
             if (props.mode === 'table') {
-                return this.handleHeaderInTable(inlines, phMarker, props, pageBreak, counter);
+                return finish(this.handleHeaderInTable(inlines, phMarker, props, pageBreak, counter));
             }
-            return this.handleHeaderStyled(inlines, props, pageBreak, counter);
+            return finish(this.handleHeaderStyled(inlines, props, pageBreak, counter));
         }
 
         this.noteStyleFallback(`H${level}`);
         // Fall back to dynamic style map (outline levels from header.xml)
         if (level in this.styles.dynamicStyleMap) {
             const s = this.styles.dynamicStyleMap[level];
-            return this.buildParagraph(
+            return finish(this.buildParagraph(
                 inlines,
                 s.style_id,
                 s.para_pr_id,
                 s.char_pr_id,
                 pageBreak
-            );
+            ));
         }
 
         // Last resort: normal style
-        return this.buildParagraph(
+        return finish(this.buildParagraph(
             inlines,
             this.styles.normalStyleId,
             this.styles.normalParaPrId,
             '0',
             pageBreak
-        );
+        ));
     }
 
     private handleHeaderStyled(
@@ -1617,9 +1754,18 @@ export class MarkdownToHwpx {
         );
         // List items must stay tight: drop the blank spacer paragraphs the
         // template author drew around the marker. Block markers (headers/body)
-        // keep them to reproduce the intended whitespace.
+        // keep them to reproduce the intended whitespace, or the blank lines of
+        // the {{SPACE:rule:previous}} rule for the block before this one.
+        let leading = ownerParagraphXml.slice(0, placeholderParagraph.paraStart);
+        if (includeSurroundings && this.contextPrevious !== null) {
+            const rule = placeholderMarker.slice(2, -2);
+            const context = this.contextSpacers.get(spaceKey(rule, this.contextPrevious));
+            if (context) leading = context.leading;
+            this.contextPrevious = null;
+            this.contextRendered = rule;
+        }
         let rendered = includeSurroundings
-            ? ownerParagraphXml.slice(0, placeholderParagraph.paraStart)
+            ? leading
                 + renderedPlaceholderParagraph
                 + ownerParagraphXml.slice(placeholderParagraph.paraEnd)
             : renderedPlaceholderParagraph;
@@ -1689,40 +1835,64 @@ export class MarkdownToHwpx {
 
         const owner = props.tableOwner;
         const wrapper = this.createParaStart(this.styles.normalStyleId, owner?.paraPrIDRef ?? this.styles.normalParaPrId, pageBreak);
-        return owner?.runTag
+        const rendered = owner?.runTag
             ? `${wrapper}${owner.runTag}${tableXml}</hp:run></hp:p>`
             : wrapper + tableXml + '</hp:p>';
+        // An explicit default rule carries derived heading-table spacers. Old
+        // hand-authored tables gain no implicit surrounding blank paragraphs.
+        const rule = placeholderMarker.slice(2, -2);
+        const spacing = (this.contextPrevious === null ? undefined : this.contextSpacers.get(spaceKey(rule, this.contextPrevious)))
+            ?? this.contextSpacers.get(spaceKey(rule, 'DEFAULT'));
+        if (spacing && this.contextPrevious !== null) {
+            this.contextPrevious = null;
+            this.contextRendered = rule;
+        }
+        return spacing?.leading ? this.cloneTemplateParagraph(spacing.leading) + '\n' + rendered : rendered;
     }
 
     // ============================================================
     // Text block (Para / Plain)
     // ============================================================
 
-    private handleTextBlock(content: PandocInline[], basePlaceholderName = 'BODY', asFigure = true): string {
+    private handleTextBlock(content: PandocInline[], basePlaceholderName = 'BODY', asFigure = true, observationTarget: object = content): string {
         // An image-only paragraph: {{FIGURE}} shape and a numbered {{CAPTION}} (plan 3.3).
         if (asFigure && basePlaceholderName === 'BODY' && (this.placeholderStyles['FIGURE'] || this.placeholderStyles['CAPTION'])) {
             const images = content.filter((inline): inline is InlineImage => inline.t === 'Image');
             const imageOnly = images.length > 0
                 && content.every((inline) => ['Image', 'Space', 'SoftBreak', 'LineBreak'].includes(inline.t));
             if (imageOnly) {
-                const figure = this.handleTextBlock(content, this.placeholderStyles['FIGURE'] ? 'FIGURE' : 'BODY', false);
+                const figure = this.handleTextBlock(content, this.placeholderStyles['FIGURE'] ? 'FIGURE' : 'BODY', false, observationTarget);
                 const captionText = figureCaption(images[0]);
                 if (!this.placeholderStyles['CAPTION'] || !captionText) return figure;
-                const caption = this.renderCaption('CAPTION', [{ t: 'Str', c: captionText }], ++this.figureCounter);
+                const caption = this.observedCaption(content, 'CAPTION', 'first_image',
+                    this.renderCaption('CAPTION', [{ t: 'Str', c: captionText }], ++this.figureCounter));
                 return [figure, caption].join('\n');
             }
         }
-        const placeholderName = this.placeholderStyles[basePlaceholderName]
+        const variantConsidered = basePlaceholderName === 'BODY' || this.hasVariantOrBase(basePlaceholderName, this.placeholderStyles);
+        const placeholderName = variantConsidered
             ? this.variantKey(basePlaceholderName, this.placeholderStyles)
             : basePlaceholderName;
         const prefixMatch = placeholderName === 'BODY'
-            ? this.matchPrefixRule(getPrefixComparableText(content))
+            ? this.matchPrefixRule(getPrefixComparableText(content, this.splitRoleMarkers))
             : null;
         const prefixRule = prefixMatch?.rule ?? null;
         const renderedContent = prefixMatch?.rule.kind === 'literal'
-            ? removePrefixComparableCharacters(content, prefixMatch.inlinePrefixLength)
+            ? removePrefixComparableCharacters(content, prefixMatch.inlinePrefixLength, this.splitRoleMarkers)
             : content;
         const props = prefixRule?.style ?? this.placeholderStyles[placeholderName];
+        const supportedVariant = /^(?:H[1-9]|BODY|CODE|QUOTE|HR)$/.test(basePlaceholderName);
+        const finish = (result: string) => this.observedSelection(observationTarget, {
+            kind: 'body', base: basePlaceholderName, requestedVariant: this.styleVariant,
+            appliedKey: props && !prefixRule ? placeholderName : null,
+            ...(prefixRule ? { prefix: { kind: prefixRule.kind, marker: prefixRule.marker } } : {}),
+            variantConsidered, fallbackSource: props ? 'none' : 'normal',
+            fallbacks: [
+                ...(this.styleVariant && variantConsidered && !supportedVariant ? ['variant_unsupported' as const] : []),
+                ...(this.styleVariant && variantConsidered && supportedVariant && placeholderName === basePlaceholderName ? ['variant_missing' as const] : []),
+                ...(!props ? ['marker_missing' as const] : []),
+            ],
+        }, result);
         if (props) {
             const placeholderMarker = prefixRule?.marker ?? `{{${placeholderName}}}`;
             const renderedFromMarkerOwner = this.renderMarkerOwnerParagraph(
@@ -1731,9 +1901,9 @@ export class MarkdownToHwpx {
                 props
             );
             if (renderedFromMarkerOwner) {
-                return renderedFromMarkerOwner;
+                return finish(renderedFromMarkerOwner);
             }
-            return this.buildParagraph(
+            return finish(this.buildParagraph(
                 renderedContent,
                 props.styleIDRef,
                 props.paraPrIDRef,
@@ -1743,10 +1913,10 @@ export class MarkdownToHwpx {
                 props.prefixCharPrIDRef ?? undefined,
                 props.suffix ?? undefined,
                 props.suffixCharPrIDRef ?? undefined
-            );
+            ));
         }
         this.noteStyleFallback(placeholderName);
-        return this.buildParagraph(content, this.styles.normalStyleId, this.styles.normalParaPrId, '0');
+        return finish(this.buildParagraph(content, this.styles.normalStyleId, this.styles.normalParaPrId, '0'));
     }
 
     // ============================================================
@@ -1757,8 +1927,8 @@ export class MarkdownToHwpx {
         const code = content[1] ?? '';
         const lines = code.split('\n');
         const parts: string[] = [];
-        if (!this.placeholderStyles['CODE']) this.noteStyleFallback('CODE');
-        const codeKey = this.placeholderStyles['CODE'] ? this.variantKey('CODE', this.placeholderStyles) : 'CODE';
+        const codeKey = this.variantKey('CODE', this.placeholderStyles);
+        if (!this.placeholderStyles[codeKey]) this.noteStyleFallback('CODE');
         const props = this.placeholderStyles[codeKey] ?? this.placeholderStyles['BODY'];
         // Like the other block markers, {{CODE}} reproduces the blank lines drawn
         // around it in its rule table; {{CODE_LANG}} labels the language.
@@ -1769,15 +1939,43 @@ export class MarkdownToHwpx {
         const styleId = props?.styleIDRef ?? this.styles.normalStyleId;
         const paraPrId = props?.paraPrIDRef ?? this.styles.normalParaPrId;
         const charPrId = props?.charPrIDRef ?? '0';
+        const breakRun = '<hp:run><hp:t><hp:lineBreak/></hp:t></hp:run>';
+        let featureRuns: string[] | null = this.selectionObserver && this.selectionObserver.shouldCaptureText?.() !== false ? [] : null;
+        let featureSize = 11;
+        let featureTooLarge = false;
         for (const line of lines) {
             const para = this.createParaStart(styleId, paraPrId);
             const run = this.textRun(line, charPrId, new Set()) || `<hp:run charPrIDRef="${charPrId}"><hp:t></hp:t></hp:run>`;
             parts.push(para + run + '</hp:p>');
+            if (featureRuns) {
+                featureSize += run.length + (featureRuns.length ? breakRun.length : 0);
+                if (featureSize > 16 * 1024 * 1024) { featureRuns = null; featureTooLarge = true; }
+                else featureRuns.push(run);
+            }
         }
         const label = language && this.placeholderStyles['CODE_LANG']
-            ? this.handleTextBlock([{ t: 'Str', c: language }], 'CODE_LANG')
+            ? this.handleTextBlock([{ t: 'Str', c: language }], 'CODE_LANG', true, content)
             : '';
-        return [surroundings.leading, label, ...parts, surroundings.trailing].filter((part) => part).join('\n');
+        const result = [surroundings.leading, label, ...parts, surroundings.trailing].filter((part) => part).join('\n');
+        if (this.selectionObserver) {
+            let text: SelectionFact['text'] = { state: 'unavailable', reason: featureTooLarge ? 'size_limit' : 'not_observed' };
+            if (featureRuns && this.selectionObserver.shouldCaptureText?.() !== false) {
+                text = emittedTextObservation(`<hp:p>${featureRuns.join(breakRun)}</hp:p>`, false, undefined,
+                    (id) => this.styles.observedScriptState(id));
+                if (text.state === 'observed') text = { ...text, basis: 'code_content_xml_text' };
+            }
+            const hasCode = !!this.placeholderStyles[codeKey];
+            this.selectionObserver.record(content, selectionFact({
+                kind: 'code', base: 'CODE', requestedVariant: this.styleVariant,
+                appliedKey: hasCode ? codeKey : props ? 'BODY' : null, variantConsidered: true,
+                fallbackSource: hasCode ? 'none' : props ? 'body' : 'normal',
+                fallbacks: [...(this.styleVariant && codeKey === 'CODE' ? ['variant_missing' as const] : []),
+                    ...(!hasCode ? ['marker_missing' as const] : [])],
+                code: { lineCount: lines.length, languageLabel: !language ? 'not_requested' : label ? 'emitted' : 'not_rendered',
+                    leadingSurroundings: !!surroundings.leading, trailingSurroundings: !!surroundings.trailing }, text,
+            }));
+        }
+        return result;
     }
 
     // ============================================================
@@ -1811,40 +2009,95 @@ export class MarkdownToHwpx {
      * `base:variant` when a variant is active and the template defines it; otherwise
      * `base` (and the missing variant is reported).
      */
-    private variantKey(base: string, styles: Record<string, unknown>, variant = this.styleVariant): string {
+    private variantKey(base: string, styles: Record<string, unknown>, variant = this.styleVariant, markerPrefix = ''): string {
         if (!variant) return base;
+        if (markerPrefix !== 'CELL_' && !/^(?:H[1-9]|BODY|CODE|QUOTE|HR)$/.test(base)) {
+            this.noteUnsupportedVariant(base, variant);
+            return base;
+        }
         const key = `${base}:${variant}`;
         if (key in styles) return key;
-        this.report.add('style_variant_missing', '템플릿에 없는 변형 스타일이라 기본 스타일을 씀', `{{${base}:${variant}}}`);
+        if (!this.autoMetaVariant)
+            this.report.add('style_variant_missing', '템플릿에 없는 변형 스타일이라 기본 스타일을 씀', `{{${markerPrefix}${base}:${variant}}}`);
         return base;
     }
 
-    private withStyleVariant<T>(variant: string | null, render: () => T): T {
+    private hasVariantOrBase(base: string, styles: Record<string, unknown>): boolean {
+        return base in styles || (!!this.styleVariant && `${base}:${this.styleVariant}` in styles);
+    }
+
+    /** A variant cannot be represented on this rendering path, regardless of template contents. */
+    private noteUnsupportedVariant(marker: string, variant = this.styleVariant): void {
+        if (!variant) return;
+        this.report.add(
+            'style_variant_unsupported',
+            '일부 요소는 지정한 변형을 지원하지 않아 무시함',
+            `{{${marker}}} (변형: ${variant})`
+        );
+    }
+
+    private withStyleVariant<T>(variant: string | null, render: () => T, autoMeta = false): T {
         const previous = this.styleVariant;
+        const previousAuto = this.autoMetaVariant;
         this.styleVariant = variant;
+        this.autoMetaVariant = autoMeta;
         try {
             return render();
         } finally {
             this.styleVariant = previous;
+            this.autoMetaVariant = previousAuto;
         }
     }
 
     /** A numbered caption paragraph ({{CAPTION}}, {{TABLE_CAPTION}}): the template text around the marker carries {{#}}. */
     private renderCaption(name: string, inlines: PandocInline[], counter: number): string {
-        const props = this.placeholderStyles[name];
-        return this.renderMarkerOwnerParagraph(inlines, `{{${name}}}`, props, 0, counter)
+        const key = this.optionalVariantKey(name);
+        const props = this.placeholderStyles[key];
+        return this.renderMarkerOwnerParagraph(inlines, `{{${key}}}`, props, 0, counter)
             ?? this.handleHeaderStyled(inlines, props, 0, counter);
     }
 
+    private optionalVariantKey(base: string): string {
+        const key = this.styleVariant ? `${base}:${this.styleVariant}` : base;
+        if (key !== base && this.placeholderStyles[key]) return key;
+        this.noteUnsupportedVariant(base);
+        return base;
+    }
+
+    private observedCaption(source: PandocInline[], name: 'CAPTION' | 'TABLE_CAPTION', origin: 'source' | 'first_image', xml: string): string {
+        return this.observedSelection(source, {
+            kind: 'caption', base: name, requestedVariant: this.styleVariant,
+            appliedKey: this.styleVariant && this.placeholderStyles[`${name}:${this.styleVariant}`] ? `${name}:${this.styleVariant}` : name,
+            captionOrigin: origin, variantConsidered: true, fallbackSource: 'none',
+            fallbacks: this.styleVariant && !this.placeholderStyles[`${name}:${this.styleVariant}`] ? ['variant_unsupported'] : [],
+        }, xml);
+    }
+
+    /** Unwrap only the transparent single-block wrapper made by hwpx:style. */
+    private captionAdjacentBlock(block: PandocBlock | undefined): { block: PandocBlock; variant: string | null } | null {
+        if (!block) return null;
+        let current = block;
+        let variant: string | null = null;
+        while (current.t === 'Div' && current.c[0][1].includes('hwpx-style') &&
+            !current.c[0][1].includes('callout') && !current.c[0][1].includes('math') && current.c[1].length === 1) {
+            variant = current.c[0][2].find(([key]) => key === 'style')?.[1] ?? null;
+            current = current.c[1][0];
+        }
+        return { block: current, variant };
+    }
+
     /** "표: …" / "Table: …" / ": …" right before or after a table, when the template has {{TABLE_CAPTION}}. */
-    private tableCaptionAt(blocks: PandocBlock[], index: number): PandocInline[] | null {
-        const block = blocks[index];
-        if (!this.placeholderStyles['TABLE_CAPTION'] || (block.t !== 'Para' && block.t !== 'Plain')) return null;
-        if (blocks[index + 1]?.t !== 'Table' && blocks[index - 1]?.t !== 'Table') return null;
+    private tableCaptionAt(blocks: PandocBlock[], index: number): { inlines: PandocInline[]; source: PandocInline[]; variant: string | null } | null {
+        const current = this.captionAdjacentBlock(blocks[index]);
+        if (!current || !this.placeholderStyles['TABLE_CAPTION']) return null;
+        const { block, variant } = current;
+        if (block.t !== 'Para' && block.t !== 'Plain') return null;
+        if (this.captionAdjacentBlock(blocks[index + 1])?.block.t !== 'Table' &&
+            this.captionAdjacentBlock(blocks[index - 1])?.block.t !== 'Table') return null;
         const text = getPrefixComparableText(block.c);
         const label = /^(?:Table|표)\s*[:：]\s*|^:\s+/.exec(text);
         if (!label) return null;
-        return removePrefixComparableCharacters(block.c, label[0].length);
+        return { inlines: removePrefixComparableCharacters(block.c, label[0].length), source: block.c, variant };
     }
 
     /** Record a block drawn without a template rule for its marker (e.g. H4, QUOTE, LIST_BULLET_2). */
@@ -1872,7 +2125,12 @@ export class MarkdownToHwpx {
      * QUOTE_X), then {{CALLOUT_TITLE}}, otherwise a bold first line in the
      * callout's own style.
      */
-    private handleCallout([attr, blocks]: [PandocAttr, PandocBlock[]], level: number): string {
+    private handleCallout(content: [PandocAttr, PandocBlock[]], level: number): string {
+        const [attr, blocks] = content;
+        const finish = (xml: string, mode: 'callout_quote' | 'callout_body_variant'): string => {
+            if (xml) this.selectionObserver?.record(content, containerSelectionFact('callout', mode));
+            return xml;
+        };
         const type = attr[2].find(([key]) => key === 'type')?.[1] ?? 'note';
         // Custom types may be any word, e.g. `> [!회의]` → {{CALLOUT_회의}}.
         const calloutKey = `CALLOUT_${type.toUpperCase().replace(/[^\p{L}\p{N}]/gu, '_')}`;
@@ -1887,27 +2145,25 @@ export class MarkdownToHwpx {
         const body = titleBlock ? blocks.slice(1) : blocks;
         if (!this.placeholderStyles[calloutKey] && this.placeholderStyles[`BODY:${type}`]) {
             // A callout named after a body variant renders as that variant's paragraphs (plan 3.6).
-            const paragraphs: PandocBlock[] = [
-                ...(titleInlines.length ? [{ t: 'Para', c: [{ t: 'Strong', c: titleInlines }] } as PandocBlock] : []),
-                ...body,
-            ];
-            return this.withStyleVariant(type, () =>
-                paragraphs.map((child) => this.processBlock(child)).filter((xml) => xml).join('\n'));
+            return finish(this.withStyleVariant(type, () => [
+                ...(titleInlines.length ? [this.handleTextBlock([{ t: 'Strong', c: titleInlines }], 'BODY', true, titleInlines)] : []),
+                ...body.map((child) => this.processBlock(child)),
+            ].filter((xml) => xml).join('\n')), 'callout_body_variant');
         }
         if (titleInlines.length === 0) {
-            return this.handleBlockquote(body, level, quoteKey);
+            return finish(this.handleBlockquote(body, level, quoteKey), 'callout_quote');
         }
         if (titleKey) {
-            return this.handleBlockquote(body, level, quoteKey, this.handleTextBlock(titleInlines, titleKey));
+            return finish(this.handleBlockquote(body, level, quoteKey, this.handleTextBlock(titleInlines, titleKey)), 'callout_quote');
         }
-        return this.handleBlockquote(
+        return finish(this.handleBlockquote(
             [{ t: 'Para', c: [{ t: 'Strong', c: titleInlines }] }, ...body],
             level,
-            quoteKey
-        );
+            quoteKey, undefined, titleInlines
+        ), 'callout_quote');
     }
 
-    private handleBlockquote(content: PandocBlock[], level = 0, quoteKeyOverride?: string, leadXml?: string): string {
+    private handleBlockquote(content: PandocBlock[], level = 0, quoteKeyOverride?: string, leadXml?: string, titleSource?: PandocInline[]): string {
         if (level > this.config.MAX_NESTING_DEPTH) return '';
         const results: string[] = leadXml ? [leadXml] : [];
         // Prefer a dedicated {{QUOTE}} (or emoji-specific {{QUOTE_*}}) template
@@ -1915,7 +2171,8 @@ export class MarkdownToHwpx {
         // border / text colour) purely in the template. Fall back to BODY style
         // + hardcoded indent otherwise.
         const selectedKey = quoteKeyOverride ?? this.selectQuoteStyleKey(content);
-        const quoteKey = this.placeholderStyles[selectedKey] && level === 0
+        const variantConsidered = level === 0 && (selectedKey === 'QUOTE' || this.hasVariantOrBase(selectedKey, this.placeholderStyles));
+        const quoteKey = variantConsidered
             ? this.variantKey(selectedKey, this.placeholderStyles)
             : selectedKey;
         const quoteStyle = this.placeholderStyles[quoteKey];
@@ -1952,8 +2209,16 @@ export class MarkdownToHwpx {
                 const prefix = mark && !getPlainText(block.c).trimStart().startsWith(mark) ? quoteStyle?.prefix ?? undefined : undefined;
                 this.availableWidthStack.push(Math.max(1, this.availableWidth - indent));
                 try {
-                    results.push(this.buildParagraph(block.c, styleId, paraPrId, charPrId, 0,
-                        prefix, prefix ? quoteStyle?.prefixCharPrIDRef ?? undefined : undefined));
+                    const xml = this.buildParagraph(block.c, styleId, paraPrId, charPrId, 0,
+                        prefix, prefix ? quoteStyle?.prefixCharPrIDRef ?? undefined : undefined);
+                    results.push(this.observedSelection(titleSource && block === content[0] ? titleSource : block.c, {
+                        kind: 'quote_paragraph', base: '', requestedVariant: this.styleVariant, requestKind: 'implicit_candidates',
+                        appliedKey: quoteStyle ? quoteKey : null, variantConsidered,
+                        fallbackSource: quoteStyle ? 'none' : this.placeholderStyles['BODY'] ? 'body_indent' : 'normal_indent',
+                        fallbacks: [...(this.styleVariant && (!variantConsidered || selectedKey !== 'QUOTE') ? ['variant_unsupported' as const] : []),
+                            ...(this.styleVariant && variantConsidered && selectedKey === 'QUOTE' && quoteKey === selectedKey ? ['variant_missing' as const] : []),
+                            ...(!quoteStyle ? ['marker_missing' as const] : [])],
+                    }, xml));
                 } finally {
                     this.availableWidthStack.pop();
                 }
@@ -1965,34 +2230,48 @@ export class MarkdownToHwpx {
         const body = results.join('\n');
         // Reproduce the blank spacer lines drawn around the {{QUOTE}} marker in
         // the template (only at the outermost quote level).
+        let result = body;
         if (quoteStyle && level === 0) {
             const { leading, trailing } = this.extractMarkerSurroundings(
                 quoteStyle,
                 `{{${quoteKey}}}`
             );
-            return [leading, body, trailing].filter((part) => part).join('\n');
+            result = [leading, body, trailing].filter((part) => part).join('\n');
         }
-        return body;
+        if (result && quoteKeyOverride === undefined) this.selectionObserver?.record(content, containerSelectionFact('quote', 'quote'));
+        return result;
     }
 
     // ============================================================
     // Horizontal rule
     // ============================================================
 
-    private handleHorizontalRule(): string {
+    private handleHorizontalRule(target: object): string {
         // Prefer a dedicated {{HR}} template style: a single paragraph whose
         // paraPr carries a bottom border renders as a divider line. The line's
         // color/thickness lives entirely in the template. Fall back to two
         // empty BODY paragraphs (spacer) when no {{HR}} style is defined.
-        const hrStyle = this.placeholderStyles['HR'];
+        const hrKey = this.variantKey('HR', this.placeholderStyles);
+        const hrStyle = this.placeholderStyles[hrKey];
+        const finish = (xml: string, mode: 'marker' | 'two_spacers', leadingSurroundings: boolean, trailingSurroundings: boolean): string => {
+            this.selectionObserver?.record(target, selectionFact({
+                kind: 'hr', base: 'HR', requestedVariant: this.styleVariant,
+                appliedKey: hrStyle ? hrKey : this.placeholderStyles['BODY'] ? 'BODY' : null,
+                variantConsidered: true, fallbackSource: hrStyle ? 'none' : this.placeholderStyles['BODY'] ? 'body' : 'normal',
+                fallbacks: [...(this.styleVariant && hrKey === 'HR' ? ['variant_missing' as const] : []),
+                    ...(!hrStyle ? ['marker_missing' as const] : [])],
+                hr: { mode, leadingSurroundings, trailingSurroundings }, text: { state: 'not_applicable' },
+            }));
+            return xml;
+        };
         if (hrStyle) {
             const line = this.buildEmptyParagraph(
                 hrStyle.styleIDRef,
                 hrStyle.paraPrIDRef,
                 hrStyle.charPrIDRef
             );
-            const { leading, trailing } = this.extractMarkerSurroundings(hrStyle, '{{HR}}');
-            return [leading, line, trailing].filter((part) => part).join('\n');
+            const { leading, trailing } = this.extractMarkerSurroundings(hrStyle, `{{${hrKey}}}`);
+            return finish([leading, line, trailing].filter((part) => part).join('\n'), 'marker', !!leading, !!trailing);
         }
 
         this.noteStyleFallback('HR');
@@ -2001,10 +2280,10 @@ export class MarkdownToHwpx {
         const paraPrId = props?.paraPrIDRef ?? this.styles.normalParaPrId;
         const charPrId = props?.charPrIDRef ?? '0';
 
-        return [
+        return finish([
             this.buildEmptyParagraph(styleId, paraPrId, charPrId),
             this.buildEmptyParagraph(styleId, paraPrId, charPrId),
-        ].join('\n');
+        ].join('\n'), 'two_spacers', false, false);
     }
 
     // ============================================================
@@ -2024,6 +2303,14 @@ export class MarkdownToHwpx {
         counter: number,
         fallbackPrefix: string
     ): string {
+        const finish = (result: string) => this.observedSelection(inlines, {
+            kind: 'list_item', base: placeholderName, requestedVariant: this.styleVariant,
+            appliedKey: listStyle ? placeholderName : null, variantConsidered: true,
+            fallbackSource: listStyle ? 'none' : this.placeholderStyles['BODY'] ? 'body_indent' : 'normal_indent',
+            fallbacks: [...(this.styleVariant ? ['variant_unsupported' as const] : []),
+                ...(!listStyle ? ['marker_missing' as const] : [])],
+        }, result);
+        this.noteUnsupportedVariant(placeholderName);
         if (listStyle) {
             if (listStyle.markerOwnerParagraph) {
                 const rendered = this.renderMarkerOwnerParagraph(
@@ -2037,23 +2324,23 @@ export class MarkdownToHwpx {
                 if (rendered) {
                     // A restarted numbering list swaps in its own paraPr.
                     const templateParaPr = rendered.match(/^<hp:p\b[^>]*\bparaPrIDRef="(\d+)"/)?.[1];
-                    return listStyle.mode === 'numbering' && templateParaPr && templateParaPr !== listStyle.paraPrIDRef
+                    return finish(listStyle.mode === 'numbering' && templateParaPr && templateParaPr !== listStyle.paraPrIDRef
                         ? rendered.replace(/^(<hp:p\b[^>]*\bparaPrIDRef=")\d+(")/, `$1${listStyle.paraPrIDRef}$2`)
-                        : rendered;
+                        : rendered);
                 }
             }
             if (listStyle.mode === 'numbering') {
-                return this.buildParagraph(
+                return finish(this.buildParagraph(
                     inlines,
                     listStyle.styleIDRef ?? this.styles.normalStyleId,
                     listStyle.paraPrIDRef,
                     listStyle.charPrIDRef
-                );
+                ));
             }
             const prefix = listStyle.prefix
                 ? this.formatCounterText(listStyle.prefix, counter)
                 : undefined;
-            return this.buildParagraph(
+            return finish(this.buildParagraph(
                 inlines,
                 listStyle.styleIDRef ?? this.styles.normalStyleId,
                 listStyle.paraPrIDRef,
@@ -2063,7 +2350,7 @@ export class MarkdownToHwpx {
                 listStyle.prefixCharPrIDRef ?? listStyle.charPrIDRef,
                 listStyle.suffix ?? undefined,
                 listStyle.suffixCharPrIDRef ?? undefined
-            );
+            ));
         }
 
         this.noteStyleFallback(placeholderName);
@@ -2072,18 +2359,65 @@ export class MarkdownToHwpx {
         const baseParaPrId = bodyStyle?.paraPrIDRef ?? this.styles.normalParaPrId;
         const paraPrId = this.styles.getOrCreateIndentParaPr(indent, baseParaPrId);
         const prefixInlines: PandocInline[] = [{ t: 'Str', c: fallbackPrefix + '\u00A0' }];
-        return this.buildParagraph(
+        return finish(this.buildParagraph(
             [...prefixInlines, ...inlines],
             bodyStyle?.styleIDRef ?? this.styles.normalStyleId,
             paraPrId,
             bodyStyle?.charPrIDRef ?? '0'
-        );
+        ));
+    }
+
+    /**
+     * The literal {{-}} rule that top-level Markdown bullet items reuse. A
+     * sample paragraph that starts with "- " is a plain paragraph to Hangul but
+     * a list item to Markdown, so the rule is applied to the bullet items
+     * themselves instead of asking authors to escape "\- ". A template list
+     * style for the same level is the author's explicit choice and wins. "*"
+     * and "+" bullets are indistinguishable from "-" after parsing, so only
+     * the "-" rule is consulted; nested items stay on the list path.
+     */
+    private listMarkerPrefixRule(level: number): PrefixPlaceholderRule | null {
+        if (level !== this.listStartLevel || this.listStyles[`BULLET_${level + 1}`]) return null;
+        const rules = this.prefixPlaceholderRules.filter((rule) => rule.kind === 'literal' && rule.token === '-');
+        return rules.find((rule) => rule.spacingMode === 'exact' && rule.leadingSpaces === 0)
+            ?? rules.find((rule) => rule.spacingMode === 'any')
+            ?? null;
+    }
+
+    private renderListMarkerRuleParagraph(
+        inlines: PandocInline[],
+        rule: PrefixPlaceholderRule,
+        placeholderName: string
+    ): string {
+        const props = rule.style;
+        // The rule paragraph carries the "-" glyph; the item text follows the
+        // space that Markdown consumed together with the bullet.
+        const content: PandocInline[] = [{ t: 'Space' }, ...inlines];
+        const finish = (result: string) => this.observedSelection(inlines, {
+            kind: 'list_item', base: placeholderName, requestedVariant: this.styleVariant,
+            appliedKey: null, prefix: { kind: rule.kind, marker: rule.marker },
+            variantConsidered: true, fallbackSource: 'none',
+            fallbacks: this.styleVariant ? ['variant_unsupported'] : [],
+        }, result);
+        return finish(this.renderMarkerOwnerParagraph(content, rule.marker, props)
+            ?? this.buildParagraph(
+                content,
+                props.styleIDRef,
+                props.paraPrIDRef,
+                props.charPrIDRef,
+                0,
+                props.prefix ?? undefined,
+                props.prefixCharPrIDRef ?? undefined,
+                props.suffix ?? undefined,
+                props.suffixCharPrIDRef ?? undefined
+            ));
     }
 
     private handleBulletList(items: PandocBlock[][], level = 0): string {
         if (level > this.config.MAX_NESTING_DEPTH) return '';
         const results: string[] = [];
         const listStyle = this.listStyles[`BULLET_${level + 1}`];
+        const markerRule = this.listMarkerPrefixRule(level);
         const bullet = this.config.LIST_BULLET_CHARS[level % this.config.LIST_BULLET_CHARS.length];
 
         for (const itemBlocks of items) {
@@ -2100,9 +2434,11 @@ export class MarkdownToHwpx {
                         results.push(this.handleOrderedList(block.c, level + 1));
                     } else if (!marked && (block.t === 'Para' || block.t === 'Plain')) {
                         // The item's first text block carries the bullet marker.
-                        results.push(this.renderListItemParagraph(
-                            block.c, listStyle, `LIST_BULLET_${level + 1}`, level, 1, bullet
-                        ));
+                        results.push(markerRule
+                            ? this.renderListMarkerRuleParagraph(block.c, markerRule, `LIST_BULLET_${level + 1}`)
+                            : this.renderListItemParagraph(
+                                block.c, listStyle, `LIST_BULLET_${level + 1}`, level, 1, bullet
+                            ));
                         marked = true;
                     } else {
                         // Continuation paragraphs, blockquotes (callouts), code blocks,
@@ -2183,6 +2519,17 @@ export class MarkdownToHwpx {
         }
 
         const renderedFromTemplate = this.renderTableRuleTemplate(tableXml);
+        if (this.selectionObserver) {
+            const specs = content[2] as [string, unknown][];
+            const head = content[3] as [unknown, unknown[][]];
+            const bodies = content[4] as [unknown, number, unknown[], unknown[][]][];
+            const headerRows = (head[1] ?? []).length;
+            const rows = headerRows + bodies.reduce((count, body) => count + body[3].length, 0);
+            this.selectionObserver.record(content, tableSelectionFact({
+                variant: this.tableVariant(), table: { rows, cols: specs.length, headerRows,
+                    wrapper: renderedFromTemplate ? (this.tableRuleTemplate ? 'rule' : 'direct') : 'generated' },
+            }));
+        }
         if (renderedFromTemplate) {
             return renderedFromTemplate;
         }
@@ -2294,7 +2641,9 @@ export class MarkdownToHwpx {
                 const cellStyle = this.resolveCellStyle({
                     isHeader, rowIdx, headerRowCount, totalBodyRows, logicalCol, colSpan, colCount,
                     text: cellBlocks.map((blk) => (blk.t === 'Plain' || blk.t === 'Para' ? getPlainText(blk.c) : '')).join(' '),
-                });
+                }, this.selectionObserver ? { target: cell, cell: {
+                    row: rowIdx, col: logicalCol, rowSpan, colSpan, rows: rowCount, cols: colCount, headerRow: isHeader,
+                } } : undefined);
                 const charPrId = cellStyle?.charPrIDRef ?? '0';
                 // `:---:`/`---:` (or HTML align) override only the horizontal
                 // alignment of the template cell's paragraph shape.
@@ -2317,7 +2666,12 @@ export class MarkdownToHwpx {
                             const para = this.createParaStart(styleId, paraPrId);
                             const inlineXml = this.processInlines(typedBlk.c, charPrId);
                             const runXml = inlineXml || this.buildEmptyRun(charPrId);
-                            cellContentXml += para + runXml + '</hp:p>';
+                            cellContentXml += this.observedSelection(typedBlk.c, {
+                                kind: 'cell_paragraph', base: '', requestedVariant: null, appliedKey: null,
+                                requestKind: 'inherited_cell', origin: 'source', variantConsidered: false, fallbackSource: 'inherited_cell',
+                                cell: { row: rowIdx, col: logicalCol, rowSpan, colSpan, rows: rowCount, cols: colCount, headerRow: isHeader },
+                                fallbacks: [],
+                            }, para + runXml + '</hp:p>');
                         } else {
                             const xml = this.processBlock(typedBlk);
                             if (xml) cellContentXml += xml;
@@ -2330,7 +2684,12 @@ export class MarkdownToHwpx {
                     const cellParagraph = this.createParaStart(styleId, paraPrId) +
                         this.buildEmptyRun(charPrId) +
                         '</hp:p>';
-                    cellContentXml = cellParagraph;
+                    cellContentXml = this.observedSelection(cell, {
+                        kind: 'cell_paragraph', base: '', requestedVariant: null, appliedKey: null,
+                        requestKind: 'inherited_cell', origin: 'generated', variantConsidered: false, fallbackSource: 'inherited_cell',
+                        cell: { row: rowIdx, col: logicalCol, rowSpan, colSpan, rows: rowCount, cols: colCount, headerRow: isHeader },
+                        fallbacks: [],
+                    }, cellParagraph);
                 }
 
                 cellPartsForRow.push(this.buildTableCellXml({
@@ -2364,7 +2723,10 @@ export class MarkdownToHwpx {
             for (let fillCol = 0; fillCol < colCount; fillCol++) {
                 if (covered[fillCol]) continue;
                 cellPartsForRow.push(
-                    this.buildFillerCellXml(rowIdx, fillCol, isHeader, headerRowCount, totalBodyRows, colCount, colWidths[fillCol])
+                    this.buildFillerCellXml(rowIdx, fillCol, isHeader, headerRowCount, totalBodyRows, colCount, colWidths[fillCol],
+                        this.selectionObserver ? { target: content, origin: 'generated', cell: {
+                            row: rowIdx, col: fillCol, rowSpan: 1, colSpan: 1, rows: rowCount, cols: colCount, headerRow: isHeader,
+                        } } : undefined)
                 );
                 covered[fillCol] = true;
             }
@@ -2395,7 +2757,7 @@ export class MarkdownToHwpx {
     private resolveCellStyle(cell: {
         isHeader: boolean; rowIdx: number; headerRowCount: number; totalBodyRows: number;
         logicalCol: number; colSpan: number; colCount: number; text: string;
-    }): CellStyle | undefined {
+    }, trace?: { target: object; cell: NonNullable<SelectionFact['cell']>; origin?: 'source' | 'generated' }): CellStyle | undefined {
         const bodyRow = cell.rowIdx - cell.headerRowCount;
         const rowType = cell.isHeader ? 'HEADER'
             : bodyRow === 0 ? 'TOP' : bodyRow === cell.totalBodyRows - 1 ? 'BOTTOM' : 'MIDDLE';
@@ -2410,14 +2772,23 @@ export class MarkdownToHwpx {
         }
         candidates.push(`${rowType}_${colType}`);
         const variant = this.tableVariant();
+        const finish = (key: string | null): CellStyle | undefined => {
+            const selected = key ? this.cellStyles[key] : undefined;
+            if (trace && this.selectionObserver) this.selectionObserver.record(trace.target, cellSelectionFact({
+                variant, candidateKeys: [...candidates, 'BODY'], selectedKey: selected ? key : null, cell: trace.cell, origin: trace.origin,
+            }));
+            return selected;
+        };
         for (const key of candidates) {
-            if (variant && this.cellStyles[`${key}:${variant}`]) return this.cellStyles[`${key}:${variant}`];
+            if (variant && this.cellStyles[`${key}:${variant}`]) return finish(`${key}:${variant}`);
             if (this.cellStyles[key]) {
-                if (variant) this.variantKey(key, this.cellStyles, variant);
-                return this.cellStyles[key];
+                if (variant) this.variantKey(key, this.cellStyles, variant, 'CELL_');
+                return finish(key);
             }
         }
-        return this.cellStyles['BODY'];
+        if (variant && this.cellStyles[`BODY:${variant}`]) return finish(`BODY:${variant}`);
+        if (variant) this.variantKey('BODY', this.cellStyles, variant, 'CELL_');
+        return finish(this.cellStyles['BODY'] ? 'BODY' : null);
     }
 
     /**
@@ -2431,19 +2802,25 @@ export class MarkdownToHwpx {
         headerRowCount: number,
         totalBodyRows: number,
         colCount: number,
-        colW: number
+        colW: number,
+        trace?: { target: object; cell: NonNullable<SelectionFact['cell']>; origin: 'generated' }
     ): string {
         const cellStyle = this.resolveCellStyle({
             isHeader, rowIdx, headerRowCount, totalBodyRows, logicalCol, colSpan: 1, colCount, text: '',
-        });
+        }, trace);
         const charPrId = cellStyle?.charPrIDRef ?? '0';
         const paraPrId = cellStyle?.paraPrIDRef ?? this.styles.normalParaPrId;
         const styleId = cellStyle?.styleIDRef ?? this.styles.normalStyleId;
         const borderFillId = cellStyle?.borderFillIDRef ?? this.styles.tableBorderFillId;
         const cm = cellStyle?.cellMargin ?? this.config.CELL_MARGIN_DEFAULT;
-        const cellContentXml = this.createParaStart(styleId, paraPrId) +
+        const emptyParagraph = this.createParaStart(styleId, paraPrId) +
             this.buildEmptyRun(charPrId) +
             '</hp:p>';
+        const cellContentXml = trace ? this.observedSelection(trace.target, {
+            kind: 'cell_paragraph', base: '', requestedVariant: null, appliedKey: null,
+            requestKind: 'inherited_cell', origin: 'generated', variantConsidered: false, fallbackSource: 'inherited_cell',
+            cell: trace.cell, fallbacks: [],
+        }, emptyParagraph) : emptyParagraph;
 
         return this.buildTableCellXml({
             cellStyle,
@@ -2503,9 +2880,10 @@ export class MarkdownToHwpx {
         const template = this.tableLayoutTemplate?.startTag;
         if (!template) {
             // Attributes of a table Hangul saves; rowCnt/colCnt must be the real counts or the file does not open.
-            return `<hp:tbl id="${tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" ` +
+            const fallback = `<hp:tbl id="${tableId}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" ` +
                 `textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" ` +
                 `rowCnt="${rowCount}" colCnt="${colCount}" cellSpacing="0" borderFillIDRef="${borderFillId}" noAdjust="0">`;
+            return this.applyTablePageBreakOption(fallback);
         }
 
         let tag = template
@@ -2528,7 +2906,19 @@ export class MarkdownToHwpx {
             tag = tag.replace(/>$/, ` rowCnt="${rowCount}">`);
         }
 
-        return tag;
+        return this.applyTablePageBreakOption(tag);
+    }
+
+    private applyTablePageBreakOption(tag: string): string {
+        const option = this.markerOptions.get('{{TABLE}}')?.pageBreak;
+        if (typeof option !== 'string' || !/^(?:cell|table)$/i.test(option)) return tag;
+        if (option.toLowerCase() === 'table') {
+            this.report.add('table_row_page_break', '행 단위 쪽 나눔은 긴 셀이 잘릴 수 있으므로 실제 한글에서 모든 쪽 확인 필요');
+        }
+        const attribute = `pageBreak="${option.toUpperCase()}"`;
+        return /\bpageBreak="[^"]*"/.test(tag)
+            ? tag.replace(/\bpageBreak="[^"]*"/, attribute)
+            : tag.replace(/>$/, ` ${attribute}>`);
     }
 
     private buildTableLayoutXml(totalWidth: number, rowCount: number): string {
@@ -2602,7 +2992,11 @@ export class MarkdownToHwpx {
 
         const innerTable = this.findFirstTableContainingCellMarker(ruleTemplate.contentXml);
         if (!innerTable) {
-            console.warn('[md2hwpx] Table template rule was found, but no inner CELL_* table could be located.');
+            if (!this.warnedMissingTableRuleTemplate) {
+                console.warn('[md2hwpx] Table template rule was found, but no inner CELL_* table could be located.');
+                this.report.add('table_template_fallback', '템플릿 표 규칙 안의 CELL_* 표를 찾지 못해 기본 표로 만듦');
+                this.warnedMissingTableRuleTemplate = true;
+            }
             return null;
         }
 
@@ -2640,7 +3034,7 @@ export class MarkdownToHwpx {
             }
             const end = match.index + match[0].length;
             const tableXml = xml.slice(start, end);
-            if (/\{\{CELL_[A-Z_]+\}\}/.test(tableXml)) {
+            if (/\{\{CELL_[A-Z_]+(?::[^{}:|<>\r\n]+)?\}\}/.test(tableXml)) {
                 return { xml: tableXml, start, end };
             }
         }
@@ -2701,6 +3095,15 @@ export class MarkdownToHwpx {
                 const newId = this.styles.getCharPrId(baseCharPrId, newFmt);
                 return this.processInlines(item.c, newId, newFmt);
             }
+            case 'Superscript':
+            case 'Subscript': {
+                const newFmt = new Set(formats);
+                newFmt.delete('superscript');
+                newFmt.delete('subscript');
+                newFmt.add(item.t === 'Superscript' ? 'superscript' : 'subscript');
+                const newId = this.styles.getCharPrId(baseCharPrId, newFmt);
+                return this.processInlines(item.c, newId, newFmt);
+            }
             case 'Code': {
                 // Inline code applies the {{CODE_INLINE}} (else {{CODE}}) look on
                 // top of the surrounding run, so `**\`x\`**` stays bold and code in
@@ -2717,10 +3120,18 @@ export class MarkdownToHwpx {
                 const innerXml = this.processInlines(linkInlines, linkId, linkFormats);
                 return this.buildHyperlinkField(url, innerXml, linkId);
             }
-            case 'Image':
-                return this.handleImageInline(item.c, baseCharPrId);
+            case 'Image': {
+                const before = this.images.length;
+                const xml = this.handleImageInline(item.c, baseCharPrId);
+                this.selectionObserver?.recordImage?.(item.c,
+                    this.images.length > before ? 'picture_reference' : xml ? 'text_substitution' : 'omitted');
+                return xml;
+            }
             case 'Note':
-                return this.buildFootnote(item.c, baseCharPrId);
+                // Automatic body classification must not style the note's blocks.
+                return this.autoMetaVariant
+                    ? this.withStyleVariant(null, () => this.buildFootnote(item.c, baseCharPrId))
+                    : this.buildFootnote(item.c, baseCharPrId);
             case 'Span': {
                 const task = item.c[0][1].includes('task-done') ? 'TASK_DONE'
                     : item.c[0][1].includes('task-open') ? 'TASK_OPEN' : null;
@@ -2789,7 +3200,11 @@ export class MarkdownToHwpx {
         charPrId = '0'
     ): string {
         const src = content[2][0];
-        if (!src) return '';
+        if (!src) {
+            this.report.add('image_missing', '그림 파일을 찾지 못해 글자로 남김', '(경로 없음)');
+            const alt = getPlainText(content[1]).trim();
+            return this.textRun(`[Image: ${alt || '경로 없음'}]`, charPrId, new Set());
+        }
 
         if (/^[a-z]+:\/\//i.test(src) || /^data:/i.test(src)) {
             this.report.add('image_remote', '원격·data 그림은 포함하지 않고 글자로 남김', src.slice(0, 200));
@@ -2805,11 +3220,21 @@ export class MarkdownToHwpx {
                 if (synthetic) {
                     throw new ConversionError(`Captured image resolver failed for ${src}: ${String(error)}`);
                 }
+                if (this.strictImageAssetResolver) {
+                    throw new ConversionError(`Bound image resolver failed for ${src}: ${String(error)}`);
+                }
                 console.warn(`[md2hwpx] Image asset resolver failed for ${src}:`, error);
             }
         }
         if (synthetic && !asset) {
             throw new ConversionError(`Captured image asset is missing: ${src}`);
+        }
+        if (this.strictImageAssetResolver && asset && !asset.bytes) {
+            throw new ConversionError(`Bound image asset has no bytes: ${src}`);
+        }
+        if (this.strictImageAssetResolver && !asset) {
+            this.report.add('image_missing', '그림 파일을 찾지 못해 글자로 남김', src);
+            return this.textRun(`[Image: ${src}]`, charPrId, new Set());
         }
         if (asset && !asset.bytes && !asset.absolutePath) {
             if (synthetic) {
@@ -3023,28 +3448,36 @@ export class MarkdownToHwpx {
         const autoNum = `<hp:ctrl><hp:autoNum num="${number}" numType="FOOTNOTE">${numberFormat}</hp:autoNum></hp:ctrl>`;
 
         const paragraphs: string[] = [];
+        const observed = (target: object, xml: string, contentXml: string, origin: 'source' | 'generated'): string =>
+            this.observedSelection(target, {
+                kind: 'footnote', base: 'FOOTNOTE', requestedVariant: this.styleVariant,
+                origin,
+                appliedKey: style.source === 'marker' ? style.markerKey ?? null : style.source === 'body' ? 'BODY' : null,
+                variantConsidered: true,
+                fallbackSource: style.source === 'marker' ? 'none' : style.source === 'named_style' ? 'named_footnote_style' : style.source,
+                fallbacks: [...(this.styleVariant && style.markerKey !== `FOOTNOTE:${this.styleVariant}` ? ['variant_unsupported' as const] : []),
+                    ...(style.source !== 'marker' ? ['marker_missing' as const] : [])],
+            }, xml, contentXml);
         let numbered = false;
         for (const block of blocks) {
             if ((block.t === 'Para' || block.t === 'Plain') && !numbered) {
-                paragraphs.push(
-                    this.createParaStart(style.styleIDRef, style.paraPrIDRef) +
-                    `<hp:run charPrIDRef="${style.charPrIDRef}">${autoNum}<hp:t> </hp:t></hp:run>` +
-                    this.processInlines(block.c, style.charPrIDRef) +
-                    '</hp:p>'
-                );
+                const para = this.createParaStart(style.styleIDRef, style.paraPrIDRef);
+                const content = this.processInlines(block.c, style.charPrIDRef);
+                const xml = para + `<hp:run charPrIDRef="${style.charPrIDRef}">${autoNum}<hp:t> </hp:t></hp:run>` + content + '</hp:p>';
+                paragraphs.push(observed(block.c, xml, para + content + '</hp:p>', 'source'));
                 numbered = true;
             } else if (block.t === 'Para' || block.t === 'Plain') {
-                paragraphs.push(this.buildParagraph(block.c, style.styleIDRef, style.paraPrIDRef, style.charPrIDRef));
+                const xml = this.buildParagraph(block.c, style.styleIDRef, style.paraPrIDRef, style.charPrIDRef);
+                paragraphs.push(observed(block.c, xml, xml, 'source'));
             } else {
                 const xml = this.processBlock(block);
                 if (xml) paragraphs.push(xml);
             }
         }
         if (!numbered) {
-            paragraphs.unshift(
-                this.createParaStart(style.styleIDRef, style.paraPrIDRef) +
-                `<hp:run charPrIDRef="${style.charPrIDRef}">${autoNum}<hp:t/></hp:run></hp:p>`
-            );
+            const para = this.createParaStart(style.styleIDRef, style.paraPrIDRef);
+            const xml = para + `<hp:run charPrIDRef="${style.charPrIDRef}">${autoNum}<hp:t/></hp:run></hp:p>`;
+            paragraphs.unshift(observed(blocks, xml, para + '</hp:p>', 'generated'));
         }
 
         const suffix = numberFormat.match(/\bsuffixChar="([^"]*)"/)?.[1] ?? '';
@@ -3058,16 +3491,17 @@ export class MarkdownToHwpx {
     }
 
     /** {{FOOTNOTE}}, else the template's 각주 (Footnote) paragraph style, else BODY. */
-    private footnoteParagraphStyle(): { styleIDRef: string; paraPrIDRef: string; charPrIDRef: string } {
-        const marker = this.placeholderStyles['FOOTNOTE'];
-        if (marker) return marker;
+    private footnoteParagraphStyle(): { styleIDRef: string; paraPrIDRef: string; charPrIDRef: string; source: 'marker' | 'named_style' | 'body' | 'normal'; markerKey?: string } {
+        const markerKey = this.optionalVariantKey('FOOTNOTE');
+        const marker = this.placeholderStyles[markerKey];
+        if (marker) return { ...marker, source: 'marker', markerKey };
         const styleTag = this.styles.headerXmlRaw.match(/<hh:style\b[^>]*\bengName="Footnote"[^>]*>/)?.[0];
         if (styleTag) {
             const attr = (name: string): string | undefined => styleTag.match(new RegExp(`\\b${name}="(\\d+)"`))?.[1];
             const styleIDRef = attr('id');
             const paraPrIDRef = attr('paraPrIDRef');
             const charPrIDRef = attr('charPrIDRef');
-            if (styleIDRef && paraPrIDRef && charPrIDRef) return { styleIDRef, paraPrIDRef, charPrIDRef };
+            if (styleIDRef && paraPrIDRef && charPrIDRef) return { styleIDRef, paraPrIDRef, charPrIDRef, source: 'named_style' };
         }
         this.noteStyleFallback('FOOTNOTE');
         const body = this.placeholderStyles['BODY'];
@@ -3075,6 +3509,7 @@ export class MarkdownToHwpx {
             styleIDRef: body?.styleIDRef ?? this.styles.normalStyleId,
             paraPrIDRef: body?.paraPrIDRef ?? this.styles.normalParaPrId,
             charPrIDRef: body?.charPrIDRef ?? '0',
+            source: body ? 'body' : 'normal',
         };
     }
 
@@ -3142,7 +3577,8 @@ export class MarkdownToHwpx {
         const placeholder = placeholderMarker;
         const renderedInlineXml = this.processInlines(inlines, props.charPrIDRef);
         let replaced = false;
-        const renderedFromTemplate = templateParagraphXml.replace(
+        const numberedTemplate = this.numberPrefixRuns(templateParagraphXml, placeholder, counter);
+        const renderedFromTemplate = numberedTemplate.replace(
             /<hp:run\b([^>]*\bcharPrIDRef="[^"]+"[^>]*)>((?:\s*(?:<hp:t(?:\s[^>]*)?\/>|<hp:t(?:\s[^>]*)?>[\s\S]*?<\/hp:t>|<hp:(?!t\b)[A-Za-z]+\b[^>]*\/>))+)\s*<\/hp:run>/g,
             (match, runAttrs: string, runInner: string) => {
                 if (replaced) {
@@ -3160,7 +3596,7 @@ export class MarkdownToHwpx {
                 // template author typed around the placeholder (e.g. " 1. " for
                 // {{LIST_ORDERED_n}}). formatCounterText is a no-op when there is
                 // no number/roman/Korean ordinal, so plain prefixes are untouched.
-                const beforeText = this.formatCounterText(decoded.text.slice(0, placeholderIndex), counter);
+                const beforeText = decoded.text.slice(0, placeholderIndex);
                 const afterText = decoded.text.slice(placeholderIndex + placeholder.length);
                 const textRun = (text: string): string => text
                     ? `<hp:run${runAttrs}><hp:t${decoded.textAttrs}>${encodeTemplateText(text, decoded.elements)}</hp:t></hp:run>`
@@ -3327,18 +3763,10 @@ export class MarkdownToHwpx {
     }
 
     private replaceTemplateNumberingText(xml: string, targetText: string, counter: number): string {
-        let replaced = false;
-        return xml.replace(HP_TEXT_PATTERN, (match, attrs: string, innerText: string) => {
-            if (replaced) return match;
-            if (templateTextContent(innerText).trim() !== targetText.trim()) {
-                return match;
-            }
-
-            replaced = true;
-            const elements: string[] = [];
-            const decoded = decodeTemplateElements(innerText, elements);
-            return `<hp:t${attrs}>${encodeTemplateText(this.formatCounterText(decoded, counter), elements)}</hp:t>`;
-        });
+        const cell = this.scanner(xml).model.elements.find(element => element.tag === 'hp:tc' && templatePlainText(element.xml).trim() === targetText.trim());
+        if (!cell) return xml;
+        const updated = this.numberPrefixRuns(cell.xml, null, counter);
+        return xml.slice(0, cell.start) + updated + xml.slice(cell.end);
     }
 
     /**
@@ -3348,34 +3776,68 @@ export class MarkdownToHwpx {
      * a number used as an ordinal (`1.` `1)` `(1)`) or else the first number, a standalone
      * Korean ordinal letter, then `A.`/`a)`/`(a)`. Text without one is left as is.
      */
-    private formatCounterText(templateText: string, counter: number): string {
-        if (templateText.includes('{{#')) {
-            return templateText.replace(/\{\{#(?::([^{}]*))?\}\}/g, (_m, style?: string) =>
-                this.ordinalText(counter, style?.trim() || '1', templateText));
+    private counterTokens(text: string): Array<{ index: number; text: string; style: string }> {
+        const explicit = [...text.matchAll(/\{\{#(?::([^{}]*))?\}\}/g)];
+        if (explicit.length)
+            return explicit.map(m => ({ index: m.index, text: m[0], style: m[1]?.trim() || '1' }));
+        const boxPattern = new RegExp(`[${BOX_SERIES.map(s => `${String.fromCodePoint(s.start!)}-${String.fromCodePoint(s.end!)}`).join('')}]`, 'u');
+        const patterns: Array<[RegExp, (m: RegExpExecArray) => string]> = [
+            [ROMAN_ORDINAL, m => m[0] === m[0].toLowerCase() ? 'i' : 'I'],
+            [/[\u2160-\u216B\u2170-\u217B\u2460-\u2473\u3260-\u326D]/, m => m[0]],
+            [boxPattern, m => m[0]],
+            [/\d+(?=[.)\]])|(?<=\()\d+/, () => '1'],
+            [/\d+/, () => '1'],
+            [/(?<![가-힣])[가나다라마바사아자차카타파하](?![가-힣])/, () => '가'],
+            [/(?<![A-Za-z])[Aa](?=[.)])|(?<=\()[Aa](?=\))/, m => m[0]],
+        ];
+        for (const [pattern, style] of patterns) {
+            const match = pattern.exec(text);
+            if (match) return [{ index: match.index, text: match[0], style: style(match) }];
         }
-        const at = (match: RegExpExecArray, text: string): string =>
-            templateText.slice(0, match.index) + text + templateText.slice(match.index + match[0].length);
-        let match: RegExpExecArray | null;
+        return [];
+    }
 
-        if ((match = ROMAN_ORDINAL.exec(templateText))) {
-            return at(match, this.ordinalText(counter, match[0] === match[0].toLowerCase() ? 'i' : 'I', templateText));
+    private formatCounterText(templateText: string, counter: number): string {
+        let text = templateText;
+        for (const token of this.counterTokens(templateText).reverse()) {
+            text = text.slice(0, token.index) + this.ordinalText(counter, token.style, templateText) + text.slice(token.index + token.text.length);
         }
-        if ((match = /[\u2160-\u216B\u2170-\u217B\u2460-\u2473\u3260-\u326D]/.exec(templateText))) {
-            return at(match, this.ordinalText(counter, match[0], templateText));
+        return text;
+    }
+
+    /** Search the full prefix, but edit a token only inside its original run. */
+    private numberPrefixRuns(xml: string, marker: string | null, counter: number): string {
+        const switches = this.scanner(xml).model.elements.filter(e => e.tag === 'hp:switch');
+        const runs = [...xml.matchAll(/<hp:run\b([^>]*)>([\s\S]*?)<\/hp:run>/g)].filter(match => !switches.some(s => match.index >= s.start && match.index < s.end)).map(match => ({
+            match, decoded: decodeTemplateTextRun(match[2]), start: 0, prefix: '', edits: [] as Array<{ index: number; length: number; value: string }>,
+        }));
+        let combined = '', found = false;
+        for (const run of runs) {
+            if (found) break;
+            run.start = combined.length;
+            if (!run.decoded) continue;
+            const index = marker === null ? -1 : run.decoded.text.indexOf(marker);
+            run.prefix = index < 0 ? run.decoded.text : run.decoded.text.slice(0, index);
+            combined += run.prefix;
+            found = index >= 0;
         }
-        if ((match = /\d+(?=[.)\]])|(?<=\()\d+/.exec(templateText) ?? /\d+/.exec(templateText))) {
-            return at(match, String(counter));
+        if (marker !== null && !found) return xml;
+        for (const token of this.counterTokens(combined)) {
+            const owner = runs.find(run => run.decoded && token.index >= run.start && token.index + token.text.length <= run.start + run.prefix.length);
+            if (!owner) {
+                this.report.add('counter_token_split', '번호 토큰이 run 경계에 걸쳐 원문을 유지함', token.text);
+                continue;
+            }
+            owner.edits.push({ index: token.index - owner.start, length: token.text.length, value: this.ordinalText(counter, token.style, combined) });
         }
-        // A standalone ordinal letter only: `[가-하]` spans almost every Hangul
-        // syllable and would turn a label such as "요약" into "가약".
-        if ((match = /(?<![가-힣])[가나다라마바사아자차카타파하](?![가-힣])/.exec(templateText))) {
-            return at(match, this.ordinalText(counter, '가', templateText));
+        for (const run of runs.reverse()) {
+            if (!run.edits.length || !run.decoded) continue;
+            let text = run.decoded.text;
+            for (const edit of run.edits.reverse()) text = text.slice(0, edit.index) + edit.value + text.slice(edit.index + edit.length);
+            const replacement = `<hp:run${run.match[1]}><hp:t${run.decoded.textAttrs}>${encodeTemplateText(text, run.decoded.elements)}</hp:t></hp:run>`;
+            xml = xml.slice(0, run.match.index) + replacement + xml.slice(run.match.index + run.match[0].length);
         }
-        // Only the first letter counts as a Latin ordinal, so "Q." stays "Q.".
-        if ((match = /(?<![A-Za-z])[Aa](?=[.)])|(?<=\()[Aa](?=\))/.exec(templateText))) {
-            return at(match, this.ordinalText(counter, match[0], templateText));
-        }
-        return templateText;
+        return xml;
     }
 
     /** The counter in one ordinal style; past the end of a finite sequence the plain number, reported. */
@@ -3386,6 +3848,8 @@ export class MarkdownToHwpx {
         };
         const fromRange = (first: number, size: number): string =>
             counter >= 1 && counter <= size ? String.fromCodePoint(first + counter - 1) : overflow();
+        const box = boxSeries(style);
+        if (box) return fromRange(box.start! + 1, box.maxValue!);
         const code = style.codePointAt(0) ?? 0;
         if (style === 'I' || style === 'i') {
             const roman = toRoman(counter);

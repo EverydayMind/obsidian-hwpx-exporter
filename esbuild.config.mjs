@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundledTemplatesPlugin, selectBundledTemplates, selectGuide } from './scripts/bundled-templates.mjs';
 import { dependencyShimsPlugin } from './scripts/dependency-shims.mjs';
+import { ARTIFACT_PLACEHOLDER, stampArtifact } from './scripts/artifact-stamp.mjs';
 
 const projectDir = dirname(fileURLToPath(import.meta.url));
 const prod = process.argv.includes('production');
@@ -28,12 +29,16 @@ const options = {
 	target: 'es2020',
 	logLevel: 'info',
 	sourcemap: prod ? false : 'inline',
+	define: { __HWPX_EXPORTER_ARTIFACT__: prod ? JSON.stringify(ARTIFACT_PLACEHOLDER) : 'null' },
 	treeShaking: true,
 	legalComments: 'none',
 	outfile: 'main.js',
 };
 
-if (prod) await esbuild.build(options);
+if (prod) {
+	await esbuild.build(options);
+	stampArtifact(join(projectDir, 'main.js'), join(projectDir, 'build-info.json'));
+}
 else {
 	const context = await esbuild.context(options);
 	await context.watch();

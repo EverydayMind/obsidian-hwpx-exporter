@@ -1,25 +1,54 @@
-import { allElements, indexSection } from './dom';
-import { NS, is, descendants, type Document } from './xml';
+import { allElements, ancestor, indexSection } from './dom';
+import { NS, is, children, descendants, type Document } from './xml';
 import { StyleError } from './limits';
 
-export function assertSupportedSection(document: Document): void {
+type XmlElement = import('@xmldom/xmldom').Element;
+const SUPPORTED_NAMESPACES = [NS.para, NS.core, NS.section, 'http://www.hancom.co.kr/hwpml/2016/paragraph', 'http://www.hancom.co.kr/hwpml/2016/HwpUnitChar'];
+const UNSUPPORTED_ELEMENTS = ['ole', 'container', 'shape', 'rect', 'line', 'ellipse', 'arc', 'polygon', 'curve', 'textart', 'equation', 'drawText', 'connectLine', 'video', 'chart', 'trackChange', 'trackChangeTag', 'autoToc', 'memo', 'masterPage'];
+
+/** Why an element cannot be carried into a derived template, or null. */
+function unsupportedReason(node: XmlElement, headerFooterOwner?: XmlElement, fixedRegion = false): string | null {
+  if (node.namespaceURI && !SUPPORTED_NAMESPACES.includes(node.namespaceURI)) return 'Unknown section element namespace.';
+  if (node.namespaceURI !== NS.para) return null;
+  if (UNSUPPORTED_ELEMENTS.includes(node.localName ?? '')) return `Unsupported element: ${node.localName}`;
+  if (is(node, 'colPr', NS.para) && node.getAttribute('colCount') !== '1') return 'Multiple columns are not yet supported for derivation.';
+  if (is(node, 'pic', NS.para) || is(node, 'tbl', NS.para)) {
+    const pos = children(node).find(child => is(child, 'pos', NS.para));
+    const headerFooter = ancestor(node, 'header') ?? ancestor(node, 'footer');
+    const inSectionHeaderFooter = headerFooterOwner && headerFooter && ancestor(headerFooter, 'p') === headerFooterOwner;
+    if (pos?.getAttribute('treatAsChar') !== '1' && !inSectionHeaderFooter && !fixedRegion) return 'Floating table/image derivation unsupported.';
+  }
+  if (is(node, 'fieldBegin', NS.para) && node.getAttribute('type') === 'HYPERLINK') return 'External/field hyperlink derivation unsupported.';
+  return null;
+}
+
+/** A whole section document (a derived template) must be supported everywhere. */
+export function assertSupportedSection(document: Document, fixedRoots: XmlElement[] = []): void {
+  const firstParagraph = children(document.documentElement!).find(node => is(node, 'p', NS.para));
   const refs = new Map([...indexSection(document.documentElement!).elements].map(([ref, node]) => [node, ref]));
-  const unsupported = (node: import('@xmldom/xmldom').Element, message: string): never => {
-    let cursor: import('@xmldom/xmldom').Node | null = node;
-    while (cursor?.nodeType === 1 && !refs.has(cursor as import('@xmldom/xmldom').Element)) cursor = cursor.parentNode;
-    const ref = cursor ? refs.get(cursor as import('@xmldom/xmldom').Element) ?? 's0' : 's0';
-    throw new StyleError('unsupported', `${message} At ${ref}.`, [ref]);
-  };
   for (const node of allElements(document)) {
-    if (node.namespaceURI && ![NS.para, NS.core, NS.section, 'http://www.hancom.co.kr/hwpml/2016/paragraph', 'http://www.hancom.co.kr/hwpml/2016/HwpUnitChar'].includes(node.namespaceURI)) unsupported(node, 'Unknown section element namespace.');
-    if (node.namespaceURI !== NS.para) continue;
-    if (['ole', 'container', 'shape', 'rect', 'line', 'ellipse', 'arc', 'polygon', 'curve', 'textart', 'equation', 'drawText', 'connectLine', 'video', 'chart', 'trackChange', 'trackChangeTag', 'autoToc', 'memo', 'masterPage'].includes(node.localName ?? '')) unsupported(node, `Unsupported element: ${node.localName}`);
-    if (is(node, 'colPr', NS.para) && node.getAttribute('colCount') !== '1') unsupported(node, 'Multiple columns are not yet supported for derivation.');
-    if (is(node, 'pic', NS.para) || is(node, 'tbl', NS.para)) {
-      const pos = descendants(node, 'pos', NS.para)[0];
-      if (pos?.getAttribute('treatAsChar') !== '1') unsupported(node, 'Floating table/image derivation unsupported.');
-    }
-    if (is(node, 'fieldBegin', NS.para) && node.getAttribute('type') === 'HYPERLINK') unsupported(node, 'External/field hyperlink derivation unsupported.');
+    let root = node;
+    while (root.parentNode?.nodeType === 1 && root.parentNode !== document.documentElement) root = root.parentNode as XmlElement;
+    const reason = unsupportedReason(node, firstParagraph, fixedRoots.includes(root));
+    if (!reason) continue;
+    let cursor: import('@xmldom/xmldom').Node | null = node;
+    while (cursor?.nodeType === 1 && !refs.has(cursor as XmlElement)) cursor = cursor.parentNode;
+    const ref = cursor ? refs.get(cursor as XmlElement) ?? 's0' : 's0';
+    throw new StyleError('unsupported', `${reason} At ${ref}.`, [ref]);
+  }
+}
+
+/**
+ * Only content copied into the derived template must be supported. A sample's
+ * own body may hold floating tables, pictures or shapes that derivation never
+ * carries over (2026-11-03: a report with one floating table in its body was
+ * refused outright), so each copied piece is checked with the sample ref it
+ * came from.
+ */
+export function assertSupportedFragment(root: XmlElement, where: string, refs: string[], sectionHeaderFooter = false, fixedRegion = false): void {
+  for (const node of [root, ...allElements(root)]) {
+    const reason = unsupportedReason(node, sectionHeaderFooter ? root : undefined, fixedRegion);
+    if (reason) throw new StyleError('unsupported', `${reason} In ${where}.`, refs);
   }
 }
 export function validateReferences(header: Document, section: Document): void {

@@ -37,7 +37,8 @@ export function indexSection(root: Element) {
     if (is(element, 'p', NS.para)) ref = refs.add('paragraph', parent);
     else if (is(element, 'tbl', NS.para)) { ref = refs.add('table', parent); table = ref; }
     else if (is(element, 'tc', NS.para)) {
-      const address = allElements(element).find(node => is(node, 'cellAddr', NS.para));
+      // Nested tables have their own cellAddr before this cell's properties.
+      const address = children(element).find(node => is(node, 'cellAddr', NS.para));
       if (!table || !address) throw new StyleError('corrupted', 'Cell without address/table.');
       ref = refs.add('cell', table, `${address.getAttribute('rowAddr')}.${address.getAttribute('colAddr')}`);
     } else if (is(element, 'header', NS.para) || is(element, 'footer', NS.para)) ref = refs.add(is(element, 'header', NS.para) ? 'header' : 'footer', parent);

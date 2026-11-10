@@ -40,12 +40,12 @@ function unique<T>(values: T[], label: string): Set<T> {
   return set
 }
 
-export function validateSnapshotReferences(snapshot: StyleSnapshot): void {
+export function validateSnapshotReferences(snapshot: StyleSnapshot, maxBytes = 4 * 1024 * 1024): void {
   if (
     new TextEncoder().encode(JSON.stringify(snapshot)).byteLength >
-    4 * 1024 * 1024
+    maxBytes
   )
-    throw new Error('Snapshot exceeds 4 MiB.')
+    throw new Error(`Snapshot exceeds ${maxBytes / (1024 * 1024)} MiB.`)
   const sections = unique(
     snapshot.sections.map((item) => item.ref),
     'section ref',
@@ -59,6 +59,7 @@ export function validateSnapshotReferences(snapshot: StyleSnapshot): void {
     if (!nodes.has(ref)) throw new Error(`Unresolved node ref: ${ref}`)
   }
   const topOrders = new Set<string>()
+  const verifiedAncestry = new Set<string>()
   for (const node of snapshot.nodes) {
     const section = node.ref.split('/')[0]
     if (!sections.has(section)) throw new Error('Unknown node section.')
@@ -69,9 +70,13 @@ export function validateSnapshotReferences(snapshot: StyleSnapshot): void {
       if (seen.has(parent)) throw new Error('Node parent cycle.')
       if (parent.split('/')[0] !== section)
         throw new Error('Cross-section parent.')
+      if (verifiedAncestry.has(parent)) break
       seen.add(parent)
-      parent = nodes.get(parent)!.parentRef
+      const ancestor = nodes.get(parent)
+      if (!ancestor) throw new Error(`Unresolved node ref: ${parent}`)
+      parent = ancestor.parentRef
     }
+    for (const ref of seen) verifiedAncestry.add(ref)
     if (node.topLevelOrder !== null) {
       const order = `${section}/${node.topLevelOrder}`
       if (node.parentRef !== null || topOrders.has(order))
@@ -160,8 +165,8 @@ export function validateSnapshotReferences(snapshot: StyleSnapshot): void {
   for (const item of snapshot.unsupported) item.refs.forEach(assertRef)
 }
 
-function validateProfileReferences(profile: ProfileMachine): void {
-  validateSnapshotReferences(profile.snapshot)
+export function validateProfileReferences(profile: ProfileMachine, snapshotLimit = 4 * 1024 * 1024): void {
+  validateSnapshotReferences(profile.snapshot, snapshotLimit)
   unique(
     profile.bindings.map((binding) => binding.key),
     'binding key',

@@ -1,0 +1,137 @@
+{
+  "WS": [
+    32,
+    9,
+    160,
+    12288
+  ],
+  "ranked": [
+    {
+      "rank": 1,
+      "symbols": [
+        "□",
+        "■"
+      ]
+    },
+    {
+      "rank": 2,
+      "symbols": [
+        "ㅇ",
+        "○",
+        "●"
+      ]
+    },
+    {
+      "rank": 3,
+      "symbols": [
+        "-",
+        "―",
+        "–"
+      ]
+    },
+    {
+      "rank": 4,
+      "symbols": [
+        "·",
+        "ㆍ"
+      ]
+    }
+  ],
+  "attached": [
+    {
+      "symbol": "※",
+      "repeat": false
+    },
+    {
+      "symbol": "*",
+      "repeat": true
+    }
+  ],
+  "following": {
+    "ordinary": "WS-or-end",
+    "numbered": "any",
+    "attached": "any"
+  },
+  "series": [
+    {
+      "name": "white-box",
+      "start": 983728,
+      "end": 983737,
+      "minValue": 0,
+      "maxValue": 9,
+      "rank": 1
+    },
+    {
+      "name": "black-box",
+      "start": 983757,
+      "end": 983766,
+      "minValue": 0,
+      "maxValue": 9,
+      "rank": 1
+    },
+    {
+      "name": "circled",
+      "start": 9312,
+      "end": 9331,
+      "minValue": 1,
+      "maxValue": 20,
+      "rank": 2
+    },
+    {
+      "name": "arabic",
+      "hierarchyMarker": false,
+      "rank": null,
+      "examples": [
+        "1.",
+        "1)",
+        "(1)"
+      ]
+    }
+  ],
+  "nonNumberExamples": {
+    "start": 983738,
+    "end": 983746
+  },
+  "boundaryVectors": [
+    {
+      "codePoint": 983727,
+      "series": null,
+      "value": null
+    },
+    {
+      "codePoint": 983728,
+      "series": "white-box",
+      "value": 0
+    },
+    {
+      "codePoint": 983737,
+      "series": "white-box",
+      "value": 9
+    },
+    {
+      "codePoint": 983738,
+      "series": null,
+      "value": null
+    },
+    {
+      "codePoint": 983756,
+      "series": null,
+      "value": null
+    },
+    {
+      "codePoint": 983757,
+      "series": "black-box",
+      "value": 0
+    },
+    {
+      "codePoint": 983766,
+      "series": "black-box",
+      "value": 9
+    },
+    {
+      "codePoint": 983767,
+      "series": null,
+      "value": null
+    }
+  ]
+}
