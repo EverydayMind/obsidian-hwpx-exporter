@@ -3629,16 +3629,23 @@ export class MarkdownToHwpx {
         // outer paragraph extra line segments that Hangul refuses to open.
         const ownXml = removeOutermostElements(paraXml, 'hp:subList');
         const lineBreakCount = (ownXml.match(/<hp:lineBreak\s*\/>/g) ?? []).length;
-        if (lineBreakCount === 0) {
+        const existingLineSegArray = ownXml.match(/<hp:linesegarray[\s\S]*?<\/hp:linesegarray>/)?.[0] ?? null;
+        // A single-line paragraph normally keeps whatever it has. The exception
+        // is one that carries a line segment copied from the template together
+        // with an inline picture: that segment has the text height, so it is
+        // rebuilt to the picture's height.
+        const staleForPicture = !!existingLineSegArray
+            && this.computeLineInlineObjectHeights(ownXml).some(height => height > 0);
+        if (lineBreakCount === 0 && !staleForPicture) {
             return paraXml;
         }
 
-        const existingLineSegArray = ownXml.match(/<hp:linesegarray[\s\S]*?<\/hp:linesegarray>/)?.[0] ?? null;
         const lineTextPositions = this.computeLineTextPositions(ownXml);
         const lineSegArray = this.buildParagraphLineSegArray(
             existingLineSegArray,
             lineBreakCount + 1,
-            lineTextPositions
+            lineTextPositions,
+            this.computeLineInlineObjectHeights(ownXml)
         );
 
         if (existingLineSegArray) {
@@ -3667,10 +3674,28 @@ export class MarkdownToHwpx {
         return positions;
     }
 
+    // Tallest inline (treatAsChar) picture on each forced line. A line that
+    // holds a picture is as tall as the picture; giving it the text height
+    // makes viewers that trust the line segments draw the picture over the
+    // following lines.
+    private computeLineInlineObjectHeights(paraXml: string): number[] {
+        const content = paraXml.replace(/<hp:linesegarray[\s\S]*?<\/hp:linesegarray>/g, '');
+        return content.split(/<hp:lineBreak\s*\/>/).map(line => {
+            let tallest = 0;
+            for (const pic of line.match(/<hp:pic\b[\s\S]*?<\/hp:pic>/g) ?? []) {
+                if (!/<hp:pos\b[^>]*\btreatAsChar="1"/.test(pic)) continue;
+                const height = Number(pic.match(/<hp:sz\b[^>]*\bheight="(\d+)"/)?.[1] ?? 0);
+                if (height > tallest) tallest = height;
+            }
+            return tallest;
+        });
+    }
+
     private buildParagraphLineSegArray(
         templateLineSegArray: string | null,
         lineCount: number,
-        lineTextPositions: number[]
+        lineTextPositions: number[],
+        lineObjectHeights: number[] = []
     ): string {
         const templateLineSeg = templateLineSegArray?.match(/<hp:lineseg\b[^>]*\/>/)?.[0] ?? '';
         const attr = (name: string, fallback: string): string =>
@@ -3684,16 +3709,20 @@ export class MarkdownToHwpx {
         const horzPos = attr('horzpos', '0');
         const horzSize = attr('horzsize', '0');
         const flags = attr('flags', '393216');
-        const lineStep = vertSize + spacing;
-
         const lines: string[] = [];
+        let vertPos = firstVertPos;
         for (let i = 0; i < lineCount; i++) {
+            const objectHeight = lineObjectHeights[i] ?? 0;
+            const tall = objectHeight > vertSize;
+            const lineSize = tall ? objectHeight : vertSize;
             lines.push(
                 `<hp:lineseg textpos="${lineTextPositions[i] ?? 0}" ` +
-                `vertpos="${firstVertPos + lineStep * i}" ` +
-                `vertsize="${vertSize}" textheight="${textHeight}" baseline="${baseline}" ` +
+                `vertpos="${vertPos}" ` +
+                `vertsize="${lineSize}" textheight="${tall ? lineSize : textHeight}" ` +
+                `baseline="${tall ? Math.round(lineSize * 0.85) : baseline}" ` +
                 `spacing="${spacing}" horzpos="${horzPos}" horzsize="${horzSize}" flags="${flags}"/>`
             );
+            vertPos += lineSize + spacing;
         }
         return `<hp:linesegarray>${lines.join('')}</hp:linesegarray>`;
     }
