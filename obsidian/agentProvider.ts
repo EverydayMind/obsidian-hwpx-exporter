@@ -190,19 +190,19 @@ const TOOLS: JsonObject[] = [
     ...DERIVE_TOOL_DEFINITIONS,
     {
         name: 'inspect_decomposition_template', title: 'Inspect decomposition template',
-        description: 'Host-only read of derived-mode marker, pair record and current record-excluded payload digest.',
+        description: 'Never call this tool; the host runs it internally. Reads derived-mode marker, pair record and payload digest.',
         inputSchema: { type: 'object', additionalProperties: false, required: ['path', 'expected_sha256'], properties: { path: { type: 'string', minLength: 1, maxLength: 4096 }, expected_sha256: { type: 'string', minLength: 64, maxLength: 64 } } },
         annotations: { readOnlyHint: true }, _meta: { ...meta(), 'dev.agentinterop/keywords': [], 'dev.agentinterop/resourceTypes': [] },
     },
     {
         name: 'inspect_derive_structure', title: 'Inspect derivation structure',
-        description: 'Host-only read of sample structure facts without source prose.',
+        description: 'Never call this tool; the host runs it internally. Sample structure facts without source prose.',
         inputSchema: { type: 'object', additionalProperties: false, required: ['sample_path', 'expected_sample_sha256'], properties: { sample_path: { type: 'string', minLength: 1, maxLength: 4096 }, expected_sample_sha256: { type: 'string', minLength: 64, maxLength: 64 } } },
         annotations: { readOnlyHint: true }, _meta: { ...meta(), 'dev.agentinterop/keywords': [], 'dev.agentinterop/resourceTypes': [] },
     },
     {
         name: 'preview_derived_export', title: 'Preview derived export',
-        description: 'Host validation of a derived bundle or a bound note with its current frontmatter template; never writes a Vault file.',
+        description: 'Never call this tool; the host runs it internally (to check a note before export use check_export). Validates a derived bundle or a bound note with its frontmatter template; writes nothing.',
         inputSchema: { type: 'object', additionalProperties: false, properties: {
             derive_from: deriveBundleInputSchema, note_path: { type: 'string', minLength: 1, maxLength: 4096 },
             expected_template_sha256: { type: 'string', minLength: 64, maxLength: 64 },
@@ -223,7 +223,7 @@ const TOOLS: JsonObject[] = [
     {
         name: 'inspect_export_blocks',
         title: 'Inspect export blocks',
-        description: 'Host validation read of a bound trial conversion; returns partial observed structure without block text.',
+        description: 'Never call this tool; the host runs it internally. Partial observed structure of a bound trial conversion, without block text.',
         inputSchema: { type: 'object', additionalProperties: false, required: ['path'], properties: {
             path: { type: 'string', minLength: 1, maxLength: 4096 },
             template: { type: 'string', minLength: 1, maxLength: 4096 },
@@ -254,7 +254,7 @@ const TOOLS: JsonObject[] = [
     {
         name: 'export_note',
         title: 'HWPX 내보내기 실행',
-        description: 'Markdown 노트를 한글(HWPX) 문서로 내보내어 Vault에 새 .hwpx 파일을 생성한다. 템플릿(template)을 지정하면 해당 서식으로 작성되며, 생략 시 노트의 hwpx-template, 없으면 템플릿 폴더의 첫 번째 템플릿을 적용한다. outputPath로 저장 위치를 지정할 수 있다.',
+        description: 'Markdown 노트를 한글(HWPX) 문서로 내보내어 Vault에 새 .hwpx 파일을 생성한다. template을 생략하면 노트의 hwpx-template, 없으면 첫 템플릿을 쓴다. outputPath로 저장 위치를 지정할 수 있다. derive_from과 expected_* 인자는 다른 도구 결과가 준 값을 그대로 옮길 때만 넣고, 직접 지어내지 않는다.',
         inputSchema: {
             type: 'object',
             additionalProperties: false,
@@ -770,7 +770,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 `템플릿 폴더: ${options.templateFolderPath || '/ (Vault 최상위)'} · 템플릿 ${templates.length}개${templates.length ? '' : ' (이 폴더 바로 아래에 .hwpx가 없어 내보낼 수 없다)'}`,
                 ...templates.slice(0, MAX_LISTED).map((template) => `- ${template}`),
                 ...(templates.length > MAX_LISTED ? [`… 템플릿 ${templates.length - MAX_LISTED}개 더 있음`] : []),
-                `저장 위치: ${options.outputMode === 'fixed_folder' ? `고정 폴더 ${options.fixedOutputFolder}` : '노트와 같은 폴더'} · 파일 이름: ${options.namingPattern} · 같은 이름이 있으면 ${options.appendSequenceOnConflict ? '-1, -2를 붙인다' : '덮어쓴다'}`,
+                `저장 위치: ${options.outputMode === 'fixed_folder' ? `고정 폴더 ${options.fixedOutputFolder}` : '노트와 같은 폴더'} · 파일 이름: ${options.namingPattern} · 같은 이름이 있으면 ${options.appendSequenceOnConflict ? '-1, -2를 붙인다' : 'export_note는 거절한다(outputPath를 다르게 준다)'}`,
                 `H1 앞 쪽 나눔: ${options.pageBreakBeforeH1 ? '켬' : '끔'} · 그림 캡처: ${capture}`,
             ];
             return {
@@ -883,7 +883,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 ...(staticCount ? [`- 데이터 전용 차트 ${staticCount}개: 이 점검에서는 렌더링하지 않았다. ${staticAvailable === false ? 'Chart Hands 정적 렌더러가 없어 저장 준비가 차단된다.' : staticCount > 10 ? '10개 제한을 넘어 저장 준비가 차단된다.' : '저장 준비에서 Chart Hands 렌더링과 입력 검증이 필요하다.'}`] : []),
                 ...(kept.length ? [`- 캡처 설정이 꺼져 있어 코드 글자 그대로 들어간다: ${kept.join(', ')}`] : []),
                 ...(shape.rawHtml ? [`- HTML 블록 ${shape.rawHtml}개: 표(<table>) 외의 HTML은 그대로 변환되지 않을 수 있다`] : []),
-                ...(!options.appendSequenceOnConflict ? ['- 같은 이름의 파일이 있으면 덮어쓰는 설정이다'] : []),
+                ...(host.exists(outputPath) ? ['- 이 경로에 이미 파일이 있다. export_note는 덮어쓰지 않으므로 outputPath를 다르게 준다'] : []),
                 // Image problems are already listed above from the note itself.
                 ...warningLines(report, ['image_missing', 'image_remote', ...(kept.length ? ['render_capture_disabled'] : [])]),
                 ...(typos.length

@@ -1,6 +1,6 @@
 {
   "name": "md-to-hwpx",
-  "version": "0.9.19",
+  "version": "0.9.20",
   "description": "Export Markdown notes to Hangul HWPX documents formatted by HWPX templates, with an MCP-like API for AI agent plugins.",
   "main": "main.js",
   "private": true,
