@@ -1,3 +1,4 @@
+import { L } from "../src/locale";
 import { readTemplateMode } from '../src/template-derive/templateMetadata';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -152,7 +153,7 @@ export async function templateOverrideWarnings(
         if (declared.source !== 'frontmatter' || declared.path === explicit) return [];
         return [{
             code: 'template_overrides_frontmatter',
-            message: '노트의 hwpx-template(' + declared.path + ') 대신 지정한 템플릿(' + explicit + ')으로 만든다. 노트가 선언한 서식을 쓰려면 template을 생략한다.',
+            message: L({ ko: '노트의 hwpx-template(', en: "Instead of the note's hwpx-template (" }) + declared.path + L({ ko: ') 대신 지정한 템플릿(', en: ") the specified template (" }) + explicit + L({ ko: ')으로 만든다. 노트가 선언한 서식을 쓰려면 template을 생략한다.', en: ") will be used. Omit template to use the formatting declared by the note." }),
             count: 1, examples: [],
         }];
     } catch {

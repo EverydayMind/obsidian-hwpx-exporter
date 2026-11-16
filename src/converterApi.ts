@@ -1,3 +1,5 @@
+import { L } from "./locale";
+import { storedCandidates } from './storedFormats';
 import { readTemplateMode, validateTemplateDialect } from './template-derive/templateMetadata';
 /**
  * High-level convenience API for the shared HWPX converter.
@@ -48,7 +50,7 @@ function applyTitlePlaceholder(mdContent: string, inputPath: string | null | und
 
 /** Obsidian syntax the converter does not render yet, reported because it stays as literal text. */
 function findLiteralSyntax(markdown: string, report: ConversionReportCollector): void {
-    const message = '지원하지 않는 Obsidian 문법이 글자 그대로 남음';
+    const message = L({ ko: '지원하지 않는 Obsidian 문법이 글자 그대로 남음', en: "Unsupported Obsidian syntax remains as literal text" });
     mapOutsideCode(maskHtmlCommentsForLiteralSyntax(markdown), (text) => {
         // Wikilinks have no target in an exported document (embeds ![[…]] are images).
         for (const match of text.matchAll(/(?<!!)\[\[([^\]\n]+)\]\]/g)) report.add('literal_syntax', message, match[0].slice(0, 80));
@@ -135,14 +137,12 @@ function maskHtmlCommentsForLiteralSyntax(markdown: string): string {
  */
 export function getDefaultReferenceDoc(): string {
     const projectRootDefault = path.join(__dirname, '..', '적용템플릿.hwpx');
-    if (fs.existsSync(projectRootDefault)) {
-        return projectRootDefault;
-    }
+    const projectMatch = storedCandidates(path.basename(projectRootDefault)).map(name => path.join(path.dirname(projectRootDefault), name)).find(p => fs.existsSync(p));
+    if (projectMatch) return projectMatch;
 
     const assetDefault = path.join(__dirname, '..', 'obsidian', 'assets', 'templates', '한글 템플릿.hwpx');
-    if (fs.existsSync(assetDefault)) {
-        return assetDefault;
-    }
+    const assetMatch = storedCandidates(path.basename(assetDefault)).map(name => path.join(path.dirname(assetDefault), name)).find(p => fs.existsSync(p));
+    if (assetMatch) return assetMatch;
 
     return path.join(__dirname, '..', 'obsidian', 'assets', 'templates', 'blank.hwpx');
 }

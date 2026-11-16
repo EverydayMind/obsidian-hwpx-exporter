@@ -1,3 +1,4 @@
+import { L } from "../locale";
 import { readBoundedZip } from './boundedZip';
 import { Guard } from './limits';
 import { parseXml } from './xml';
@@ -19,5 +20,5 @@ export function validateTemplateDialect(authority: string | null, markdown: unkn
   const known = (value: string) => value === 'hwpx-exporter-md/2';
   if (authority !== null && !known(authority)) throw new DialectError('dialect_unsupported', authority);
   if (markdown !== undefined && (typeof markdown !== 'string' || !known(markdown))) throw new DialectError('dialect_unsupported', typeof markdown === 'string' ? markdown : JSON.stringify(markdown));
-  if (authority !== null && markdown !== undefined && markdown !== authority) throw new DialectError('dialect_mismatch', 'frontmatter의 hwpx-dialect를 지우거나 짝 템플릿을 고르세요.');
+  if (authority !== null && markdown !== undefined && markdown !== authority) throw new DialectError('dialect_mismatch', L({ ko: 'frontmatter의 hwpx-dialect를 지우거나 짝 템플릿을 고르세요.', en: "Remove hwpx-dialect from frontmatter or select the paired template." }));
 }

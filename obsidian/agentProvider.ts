@@ -1,3 +1,4 @@
+import { getLocale, localizer, type Locale } from '../src/locale';
 import { inspectDecompositionTemplate } from './decompositionInspection';
 import { RetiredRecordError } from '../src/template-derive/decompositionRecord';
 import { DialectError } from '../src/template-derive/templateMetadata';
@@ -186,7 +187,9 @@ const meta = (): JsonObject => ({
     'dev.agentinterop/maxResultChars': MAX_RESULT_CHARS,
 });
 
-const TOOLS: JsonObject[] = [
+function createTools(locale: Locale): JsonObject[] {
+const L = localizer(locale);
+return [
     ...DERIVE_TOOL_DEFINITIONS,
     {
         name: 'inspect_decomposition_template', title: 'Inspect decomposition template',
@@ -214,8 +217,8 @@ const TOOLS: JsonObject[] = [
     },
     {
         name: 'get_export_options',
-        title: 'HWPX 내보내기 설정',
-        description: 'HWPX Exporter의 현재 설정을 돌려준다: 쓸 수 있는 한글 템플릿(.hwpx) 목록, 결과를 저장할 위치와 파일 이름 규칙, 그림 캡처 설정.',
+        title: L({ ko: 'HWPX 내보내기 설정', en: "HWPX export settings" }),
+        description: L({ ko: 'HWPX Exporter의 현재 설정을 돌려준다: 쓸 수 있는 한글 템플릿(.hwpx) 목록, 결과를 저장할 위치와 파일 이름 규칙, 그림 캡처 설정.', en: "Returns the current HWPX Exporter settings: available Hangul templates (.hwpx), output location and file naming rules, and image capture settings." }),
         inputSchema: { type: 'object', additionalProperties: false, properties: {} },
         annotations: { readOnlyHint: true },
         _meta: meta(),
@@ -237,15 +240,15 @@ const TOOLS: JsonObject[] = [
     },
     {
         name: 'check_export',
-        title: 'HWPX 내보내기 점검',
-        description: 'Markdown 노트를 한글(HWPX)로 내보내면 어떻게 되는지 미리 점검한다. 변환을 시험 실행해 성공 여부를 확인하고, 저장될 경로, 노트 구성(제목·표·목록·코드·그림 수), 찾지 못해 글자로 대체될 그림, 그림으로 캡처될 코드 블록을 알려 준다. Vault에는 파일을 만들지 않는다.',
+        title: L({ ko: 'HWPX 내보내기 점검', en: "Check HWPX export" }),
+        description: L({ ko: 'Markdown 노트를 한글(HWPX)로 내보내면 어떻게 되는지 미리 점검한다. 변환을 시험 실행해 성공 여부를 확인하고, 저장될 경로, 노트 구성(제목·표·목록·코드·그림 수), 찾지 못해 글자로 대체될 그림, 그림으로 캡처될 코드 블록을 알려 준다. Vault에는 파일을 만들지 않는다.', en: "Checks what will happen when a Markdown note is exported to Hangul (HWPX). Runs a trial conversion to check success and reports the output path, note structure (counts of headings, tables, lists, code blocks and images), missing images that will become text, and code blocks to capture as images. Creates no files in the Vault." }),
         inputSchema: {
             type: 'object',
             additionalProperties: false,
             required: ['path'],
             properties: {
-                path: { type: 'string', minLength: 1, maxLength: 4096, description: '점검할 Markdown 노트의 Vault 기준 상대 경로.' },
-                template: { type: 'string', minLength: 1, maxLength: 4096, description: 'get_export_options가 준 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 템플릿으로 시험한다.' },
+                path: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: '점검할 Markdown 노트의 Vault 기준 상대 경로.', en: "Vault-relative path of the Markdown note to check." }) },
+                template: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: 'get_export_options가 준 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 템플릿으로 시험한다.', en: "One of the template paths returned by get_export_options. If omitted, tests with the note's hwpx-template, or the first listed template when none is declared." }) },
             },
         },
         annotations: { readOnlyHint: true },
@@ -253,19 +256,19 @@ const TOOLS: JsonObject[] = [
     },
     {
         name: 'export_note',
-        title: 'HWPX 내보내기 실행',
-        description: 'Markdown 노트를 한글(HWPX) 문서로 내보내어 Vault에 새 .hwpx 파일을 생성한다. template을 생략하면 노트의 hwpx-template, 없으면 첫 템플릿을 쓴다. outputPath로 저장 위치를 지정할 수 있다. derive_from과 expected_* 인자는 다른 도구 결과가 준 값을 그대로 옮길 때만 넣고, 직접 지어내지 않는다.',
+        title: L({ ko: 'HWPX 내보내기 실행', en: "Export to HWPX" }),
+        description: L({ ko: 'Markdown 노트를 한글(HWPX) 문서로 내보내어 Vault에 새 .hwpx 파일을 생성한다. template을 생략하면 노트의 hwpx-template, 없으면 첫 템플릿을 쓴다. outputPath로 저장 위치를 지정할 수 있다. derive_from과 expected_* 인자는 다른 도구 결과가 준 값을 그대로 옮길 때만 넣고, 직접 지어내지 않는다.', en: "Exports a Markdown note as a Hangul (HWPX) document, creating a new .hwpx file in the Vault. If template is omitted, uses the note's hwpx-template or the first template when none is declared. Set outputPath to choose the destination. Include derive_from and expected_* arguments only when copying values exactly from another tool result; never invent them." }),
         inputSchema: {
             type: 'object',
             additionalProperties: false,
             required: ['path'],
             properties: {
-                path: { type: 'string', minLength: 1, maxLength: 4096, description: '내보낼 Markdown 노트의 Vault 기준 상대 경로 (예: "노트.md", "100.내용/보고서.md").' },
-                template: { type: 'string', minLength: 1, maxLength: 4096, description: 'get_export_options로 확인한 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 번째 템플릿을 사용한다.' },
+                path: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: '내보낼 Markdown 노트의 Vault 기준 상대 경로 (예: "노트.md", "100.내용/보고서.md").', en: "Vault-relative path of the Markdown note to export (e.g. \"Note.md\", \"100.Content/Report.md\")." }) },
+                template: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: 'get_export_options로 확인한 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 번째 템플릿을 사용한다.', en: "One of the template paths obtained from get_export_options. If omitted, uses the note's hwpx-template, or the first listed template when none is declared." }) },
                 expected_note_sha256: { type: 'string', minLength: 64, maxLength: 64 },
                 expected_template_sha256: { type: 'string', minLength: 64, maxLength: 64 },
                 derive_from: deriveBundleInputSchema,
-                outputPath: { type: 'string', minLength: 1, maxLength: 4096, description: '결과 .hwpx 파일의 Vault 기준 상대 경로. 생략하면 플러그인 설정의 위치/이름 규칙을 따른다.' },
+                outputPath: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: '결과 .hwpx 파일의 Vault 기준 상대 경로. 생략하면 플러그인 설정의 위치/이름 규칙을 따른다.', en: "Vault-relative path of the output .hwpx file. If omitted, follows the location and naming rules in the plugin settings." }) },
             },
         },
         annotations: { readOnlyHint: false, destructiveHint: false },
@@ -273,8 +276,12 @@ const TOOLS: JsonObject[] = [
         _meta: { ...meta(), 'dev.agentinterop/effect': 'commit' },
     },
 ];
+}
 
-const INSTRUCTIONS = 'Markdown 노트를 한글(HWPX) 문서로 내보내는 HWPX Exporter 도구다. get_export_options로 사용 가능한 템플릿 목록과 설정을 확인하고, 필요 시 check_export로 사전 점검을 수행하며, export_note로 Markdown 노트를 .hwpx 파일로 실제 내보내기/생성한다. export_note는 사람이 승인해야 새 파일을 만들고, 이미 있는 파일은 덮어쓰지 않는다.';
+function instructions(locale: Locale): string {
+    const L = localizer(locale);
+    return L({ ko: 'Markdown 노트를 한글(HWPX) 문서로 내보내는 HWPX Exporter 도구다. get_export_options로 사용 가능한 템플릿 목록과 설정을 확인하고, 필요 시 check_export로 사전 점검을 수행하며, export_note로 Markdown 노트를 .hwpx 파일로 실제 내보내기/생성한다. export_note는 사람이 승인해야 새 파일을 만들고, 이미 있는 파일은 덮어쓰지 않는다.', en: "HWPX Exporter tools export Markdown notes as Hangul (HWPX) documents. Use get_export_options to check available templates and settings, check_export for a preflight check when needed, and export_note to export a Markdown note and create a .hwpx file. export_note creates a new file only after a person approves and never overwrites an existing file." });
+}
 
 /** Sorted-key JSON: equal to RFC 8785 for the strings, integers and arrays used here, so the host recomputes the same digest. */
 function canonicalJson(value: unknown): string {
@@ -368,57 +375,57 @@ const warningsJson = (report: ConversionReport | undefined): Json[] =>
         examples: [...warning.examples],
     }));
 
-const warningLines = (report: ConversionReport | undefined, skip: string[] = []): string[] =>
-    (report?.warnings ?? [])
-        .filter((warning) => !skip.includes(warning.code))
-        .map((warning) => `- ${warning.message}${warning.count > 1 ? ` ${warning.count}건` : ''}${warning.examples.length ? `: ${listed(warning.examples)}` : ''}`);
+export function createAgentProvider(host: ExportProviderHost, locale: Locale = getLocale()): AgentCapabilityProvider {
+    const L = localizer(locale);
+    const warningLines = (report: ConversionReport | undefined, skip: string[] = []): string[] =>
+        (report?.warnings ?? [])
+            .filter((warning) => !skip.includes(warning.code))
+            .map((warning) => `- ${warning.message}${warning.count > 1 ? L({ ko: ` ${warning.count}건`, en: ` ${warning.count} item(s)` }) : ''}${warning.examples.length ? `: ${listed(warning.examples)}` : ''}`);
 
-/** Image links arrive percent-encoded from the Markdown parser; show them as written in the note. */
-const readable = (source: string): string => {
-    try {
-        return decodeURIComponent(source);
-    } catch {
-        return source;
+    /** Image links arrive percent-encoded from the Markdown parser; show them as written in the note. */
+    const readable = (source: string): string => {
+        try {
+            return decodeURIComponent(source);
+        } catch {
+            return source;
+        }
+    };
+
+    const listed = (items: string[]): string =>
+        items.slice(0, MAX_LISTED).map(readable).join(', ') + (items.length > MAX_LISTED ? L({ ko: ` 외 ${items.length - MAX_LISTED}개`, en: ` plus ${items.length - MAX_LISTED}` }) : '');
+
+    function normalizeNotePath(value: unknown): string {
+        if (typeof value !== 'string') throw new ToolError('INVALID_ARGUMENT', L({ ko: 'path는 문자열이어야 한다.', en: "path must be a string." }), true);
+        const raw = value.trim().replace(/\\/g, '/');
+        const parts = raw.split('/');
+        // eslint-disable-next-line no-control-regex -- control characters are exactly what this check rejects
+        if (!raw || /^(?:[A-Za-z]:|\/)/.test(raw) || /[\u0000-\u001F]/.test(raw) || parts.includes('..')) {
+            throw new ToolError('INVALID_ARGUMENT', L({ ko: 'path는 Vault 기준 상대 경로여야 한다.', en: "path must be relative to the Vault." }), true);
+        }
+        return parts.filter((part) => part && part !== '.').join('/');
     }
-};
-
-const listed = (items: string[]): string =>
-    items.slice(0, MAX_LISTED).map(readable).join(', ') + (items.length > MAX_LISTED ? ` 외 ${items.length - MAX_LISTED}개` : '');
-
-function normalizeNotePath(value: unknown): string {
-    if (typeof value !== 'string') throw new ToolError('INVALID_ARGUMENT', 'path는 문자열이어야 한다.', true);
-    const raw = value.trim().replace(/\\/g, '/');
-    const parts = raw.split('/');
-    // eslint-disable-next-line no-control-regex -- control characters are exactly what this check rejects
-    if (!raw || /^(?:[A-Za-z]:|\/)/.test(raw) || /[\u0000-\u001F]/.test(raw) || parts.includes('..')) {
-        throw new ToolError('INVALID_ARGUMENT', 'path는 Vault 기준 상대 경로여야 한다.', true);
-    }
-    return parts.filter((part) => part && part !== '.').join('/');
-}
-
-export function createAgentProvider(host: ExportProviderHost): AgentCapabilityProvider {
     const descriptor: JsonObject = {
-        provider: { id: host.id, name: host.name, version: host.version, description: 'Markdown 노트의 HWPX 내보내기 설정과 사전 점검' },
-        instructions: INSTRUCTIONS,
-        tools: TOOLS,
+        provider: { id: host.id, name: host.name, version: host.version, description: L({ ko: 'Markdown 노트의 HWPX 내보내기 설정과 사전 점검', en: "HWPX export settings and preflight checks for Markdown notes" }) },
+        instructions: instructions(locale),
+        tools: createTools(locale),
     };
     let disposed = false;
 
     /** Validates export_note arguments; the destination checked here is the one written. */
     const resolveExport = async (args: JsonObject): Promise<{ notePath: string; template: string; destination: string; bundle?: ReturnType<typeof validatedBundle> }> => {
         const notePath = normalizeNotePath(args.path);
-        if (!/\.md$/i.test(notePath)) throw new ToolError('UNSUPPORTED_FORMAT', 'Markdown 노트(.md)만 내보낼 수 있다.');
+        if (!/\.md$/i.test(notePath)) throw new ToolError('UNSUPPORTED_FORMAT', L({ ko: 'Markdown 노트(.md)만 내보낼 수 있다.', en: "Only Markdown notes (.md) can be exported." }));
         const note = await host.readNote(notePath);
-        if (!note) throw new ToolError('NOT_FOUND', `Vault에 이 노트가 없다: ${notePath}`, true);
+        if (!note) throw new ToolError('NOT_FOUND', L({ ko: `Vault에 이 노트가 없다: ${notePath}`, en: `Note not found in the Vault: ${notePath}` }), true);
         const bundle = args.derive_from === undefined ? undefined : validatedBundle(args.derive_from);
         if (bundle && (args.template !== undefined || args.expected_template_sha256 !== undefined))
-            throw new ToolError('INVALID_ARGUMENT', 'derive_from와 template은 함께 지정할 수 없다.');
+            throw new ToolError('INVALID_ARGUMENT', L({ ko: 'derive_from와 template은 함께 지정할 수 없다.', en: "derive_from and template cannot be specified together." }));
         const template = bundle ? bundle.sample_path : (await loadNoteTemplate(host, notePath, args.template, args.expected_template_sha256)).path;
 
         let customOutputPath: string | undefined;
         if (args.outputPath !== undefined) {
             if (typeof args.outputPath !== 'string' || !args.outputPath.trim()) {
-                throw new ToolError('INVALID_ARGUMENT', 'outputPath는 비어있지 않은 문자열이어야 한다.', true);
+                throw new ToolError('INVALID_ARGUMENT', L({ ko: 'outputPath는 비어있지 않은 문자열이어야 한다.', en: "outputPath must be a nonempty string." }), true);
             }
             customOutputPath = normalizeNotePath(args.outputPath);
             if (!/\.hwpx$/i.test(customOutputPath)) {
@@ -429,10 +436,10 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
         // The path checked here is the path written, so settings cannot move the write elsewhere.
         const target = customOutputPath ?? host.outputPath(notePath);
         if (target.split('/').some((part) => part.startsWith('.'))) {
-            throw new ToolError('INVALID_ARGUMENT', `숨김 폴더나 숨김 파일에는 내보낼 수 없다: ${target}`, true);
+            throw new ToolError('INVALID_ARGUMENT', L({ ko: `숨김 폴더나 숨김 파일에는 내보낼 수 없다: ${target}`, en: `Cannot export to hidden folders or files: ${target}` }), true);
         }
         if (host.exists(target)) {
-            throw new ToolError('ALREADY_EXISTS', `이미 있는 파일은 덮어쓰지 않는다: ${target}. 다른 outputPath를 지정하라.`, true);
+            throw new ToolError('ALREADY_EXISTS', L({ ko: `이미 있는 파일은 덮어쓰지 않는다: ${target}. 다른 outputPath를 지정하라.`, en: `Existing files are never overwritten: ${target}. Specify a different outputPath.` }), true);
         }
 
         if (bundle) await readBoundBytes(host, bundle.sample_path, bundle.expected_sample_sha256);
@@ -450,10 +457,10 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
     }>();
 
     const resolveTarget = async (name: string, args: JsonObject, ctx?: CommitContext): Promise<ExportTarget> => {
-        if (disposed) throw new ToolError('DISPOSED', '플러그인이 종료됐다.');
-        if (ctx?.signal?.aborted) throw new ToolError('CANCELLED', '대상 확인이 취소됐다.');
+        if (disposed) throw new ToolError('DISPOSED', L({ ko: '플러그인이 종료됐다.', en: "The plugin has been disposed." }));
+        if (ctx?.signal?.aborted) throw new ToolError('CANCELLED', L({ ko: '대상 확인이 취소됐다.', en: "Target resolution was cancelled." }));
         if (name === 'derive_template') return 'derive_from' in args ? (await resolveDecompositionSave(host, args)).target : resolveDerivation(host, args);
-        if (name !== 'export_note') throw new ToolError('UNKNOWN_TOOL', `저장 도구가 아니다: ${name}`);
+        if (name !== 'export_note') throw new ToolError('UNKNOWN_TOOL', L({ ko: `저장 도구가 아니다: ${name}`, en: `Not a commit tool: ${name}` }));
         const { template, destination, bundle } = await resolveExport(args ?? {});
         return { kind: 'new', destination, template: { path: template, sha256: bundle?.expected_sample_sha256 ?? await host.templateHash(template) } };
     };
@@ -471,14 +478,14 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
     const commit: AgentCapabilityProvider['commit'] = {
         /** Fixes the exact bytes of the new file in memory. Writes no Vault file. */
         async prepare(request, ctx) {
-            if (disposed) throw new ToolError('DISPOSED', '플러그인이 종료됐다.');
-            if (!['export_note', 'derive_template'].includes(request?.tool)) throw new ToolError('UNKNOWN_TOOL', `저장 도구가 아니다: ${String(request?.tool)}`);
-            if (!ctx?.caller) throw new ToolError('INVALID_ARGUMENT', '저장을 요청한 호출을 확인할 수 없다.');
+            if (disposed) throw new ToolError('DISPOSED', L({ ko: '플러그인이 종료됐다.', en: "The plugin has been disposed." }));
+            if (!['export_note', 'derive_template'].includes(request?.tool)) throw new ToolError('UNKNOWN_TOOL', L({ ko: `저장 도구가 아니다: ${String(request?.tool)}`, en: `Not a commit tool: ${String(request?.tool)}` }));
+            if (!ctx?.caller) throw new ToolError('INVALID_ARGUMENT', L({ ko: '저장을 요청한 호출을 확인할 수 없다.', en: "Cannot identify the caller requesting the save." }));
             if (request.captureOutputAnchors !== undefined && typeof request.captureOutputAnchors !== 'boolean') throw new ToolError('INVALID_ARGUMENT', 'Invalid output anchor request.');
             const captureOutputAnchors = request.captureOutputAnchors === true;
             const target = await resolveTarget(request.tool, request.args, ctx);
             if (canonicalJson(target) !== canonicalJson(request.target)) {
-                throw new ToolError('TARGET_MISMATCH', '확정한 노트·템플릿·저장 경로가 지금과 다르다. 다시 준비하라.', true);
+                throw new ToolError('TARGET_MISMATCH', L({ ko: '확정한 노트·템플릿·저장 경로가 지금과 다르다. 다시 준비하라.', en: "The resolved note, template or destination has changed. Prepare again." }), true);
             }
             let bytes: Uint8Array, notePath: string, template: string;
             let report: ConversionReport | undefined, derivation: Record<string, unknown> | undefined, conversionHash: string | undefined, derivationHash: string | undefined;
@@ -527,7 +534,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             const templateWarnings = request.tool === 'export_note'
                 ? await templateOverrideWarnings(host, notePath, request.args.template, ctx.signal) : [];
             if (!await dependenciesCurrent(host, inputDependencies)) throw new ToolError('SOURCE_CHANGED', 'Input changed during preparation.');
-            if (ctx.signal?.aborted) throw new ToolError('CANCELLED', '저장 준비가 취소됐다.');
+            if (ctx.signal?.aborted) throw new ToolError('CANCELLED', L({ ko: '저장 준비가 취소됐다.', en: "Save preparation was cancelled." }));
             const owner = ownerOf(ctx.caller);
             for (const record of prepared.values()) {
                 if (record.state === 'open' && record.owner === owner && record.shown.destination === target.destination) {
@@ -552,7 +559,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                 ],
                 providerInternalWrites,
                 report: {
-                    summary: decomposition ? ['샘플 분해 저장: 텍스트 MD 1개 + 템플릿 HWPX 1개.'] : [`노트 ${notePath}을(를) 템플릿 ${template}로 변환한 새 파일을 만든다.`],
+                    summary: decomposition ? [L({ ko: '샘플 분해 저장: 텍스트 MD 1개 + 템플릿 HWPX 1개.', en: "Save sample decomposition: one text MD file + one template HWPX file." })] : [L({ ko: `노트 ${notePath}을(를) 템플릿 ${template}로 변환한 새 파일을 만든다.`, en: `Note ${notePath} with template ${template}: create a new converted file.` })],
                     warnings: [...templateWarnings.map((warning) => '- ' + warning.message), ...warningLines(report).slice(0, 20).map((line) => line.slice(0, 300))],
                     ...(derivation ? { derivation: derivation as JsonObject } : {}),
                     ...(derivationHash ? { derivation_sha256: derivationHash } : {}),
@@ -573,25 +580,25 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
          */
         async execute(ticket, ctx) {
             const record = prepared.get(ticket?.preparationId);
-            if (!record) throw new ToolError('NOT_FOUND', '저장 준비를 찾을 수 없다. 다시 실행하지 말고 host의 체크포인트로 확인하라.');
+            if (!record) throw new ToolError('NOT_FOUND', L({ ko: '저장 준비를 찾을 수 없다. 다시 실행하지 말고 host의 체크포인트로 확인하라.', en: "Save preparation not found. Check the host checkpoint instead of executing again." }));
             const ticketId = String(ticket.ticketId);
             if (record.receipt) return JSON.parse(JSON.stringify(record.receipt)) as CommitReceipt;
             if (!ctx?.caller || !ticket.caller || ownerOf(ctx.caller) !== record.owner || ownerOf(ticket.caller) !== record.owner) {
-                return notWritten(record, ticketId, 'TARGET_MISMATCH', '저장을 준비한 대화·실행과 다른 호출이다. 저장하지 않았다.');
+                return notWritten(record, ticketId, 'TARGET_MISMATCH', L({ ko: '저장을 준비한 대화·실행과 다른 호출이다. 저장하지 않았다.', en: "The caller differs from the conversation or run that prepared the save. Nothing was saved." }));
             }
             if (record.state !== 'open') {
-                return notWritten(record, ticketId, 'REVISION_CONFLICT', '이 저장 준비는 새 준비로 대체됐다. 저장하지 않았다.');
+                return notWritten(record, ticketId, 'REVISION_CONFLICT', L({ ko: '이 저장 준비는 새 준비로 대체됐다. 저장하지 않았다.', en: "This save preparation was superseded by a newer preparation. Nothing was saved." }));
             }
             if (ticket.preparationDigest !== record.shown.preparationDigest
                 || ticket.destination !== record.shown.destination
                 || canonicalJson(ticket.writeSet) !== canonicalJson(record.shown.writeSet)) {
-                return notWritten(record, ticketId, 'INVALID_ARGUMENT', '저장 ticket이 승인한 준비와 다르다. 저장하지 않았다.');
+                return notWritten(record, ticketId, 'INVALID_ARGUMENT', L({ ko: '저장 ticket이 승인한 준비와 다르다. 저장하지 않았다.', en: "The save ticket does not match the approved preparation. Nothing was saved." }));
             }
             if (Date.parse(record.shown.expiresAt) <= Date.now()) {
-                return notWritten(record, ticketId, 'EXPIRED', '저장 준비가 만료됐다. 저장하지 않았다.');
+                return notWritten(record, ticketId, 'EXPIRED', L({ ko: '저장 준비가 만료됐다. 저장하지 않았다.', en: "The save preparation expired. Nothing was saved." }));
             }
             if (disposed || ctx.signal?.aborted) {
-                return notWritten(record, ticketId, 'CANCELLED', '저장이 취소됐다. 저장하지 않았다.');
+                return notWritten(record, ticketId, 'CANCELLED', L({ ko: '저장이 취소됐다. 저장하지 않았다.', en: "Saving was cancelled. Nothing was saved." }));
             }
             if (record.decompositionFiles) {
                 try { await assertDecompositionPathsFree(host, record.decompositionFiles.map(f => f.path)); }
@@ -605,7 +612,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             }
             const { destination } = record.shown;
             if (await host.readBytes(destination)) {
-                return notWritten(record, ticketId, 'ALREADY_EXISTS', `이미 있는 파일은 덮어쓰지 않는다: ${destination}`);
+                return notWritten(record, ticketId, 'ALREADY_EXISTS', L({ ko: `이미 있는 파일은 덮어쓰지 않는다: ${destination}`, en: `Existing files are never overwritten: ${destination}` }));
             }
 
             const dependencies = record.shown.saveOptions.inputDependencies as Array<{ path: string; sha256: string }>;
@@ -690,7 +697,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
         async status(preparationId) {
             const record = prepared.get(preparationId);
             if (!record) return { state: 'unknown_preparation' };
-            return JSON.parse(JSON.stringify(record.receipt ?? notWritten(record, 'none', 'NOT_EXECUTED', '저장을 실행하지 않았다.'))) as CommitReceipt;
+            return JSON.parse(JSON.stringify(record.receipt ?? notWritten(record, 'none', 'NOT_EXECUTED', L({ ko: '저장을 실행하지 않았다.', en: "The save was not executed." })))) as CommitReceipt;
         },
     };
 
@@ -760,18 +767,18 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             const options = host.options();
             const templates = host.templates();
             const capture = !options.captureRenderedBlocks
-                ? '끔'
+                ? L({ ko: '끔', en: "off" })
                 : [
                     options.captureMermaid ? 'Mermaid' : '',
-                    options.captureSvgFiles ? 'SVG 파일' : '',
-                    options.captureThirdPartyRenderers ? `서드파티(${options.thirdPartyLanguages.join(', ')})` : '',
-                ].filter(Boolean).join(', ') || '대상 없음';
+                    options.captureSvgFiles ? L({ ko: 'SVG 파일', en: "SVG files" }) : '',
+                    options.captureThirdPartyRenderers ? L({ ko: `서드파티(${options.thirdPartyLanguages.join(', ')})`, en: `Third-party (${options.thirdPartyLanguages.join(', ')})` }) : '',
+                ].filter(Boolean).join(', ') || L({ ko: '대상 없음', en: "no targets" });
             const lines = [
-                `템플릿 폴더: ${options.templateFolderPath || '/ (Vault 최상위)'} · 템플릿 ${templates.length}개${templates.length ? '' : ' (이 폴더 바로 아래에 .hwpx가 없어 내보낼 수 없다)'}`,
+                L({ ko: `템플릿 폴더: ${options.templateFolderPath || '/ (Vault 최상위)'} · 템플릿 ${templates.length}개${templates.length ? '' : ' (이 폴더 바로 아래에 .hwpx가 없어 내보낼 수 없다)'}`, en: `Template folder: ${options.templateFolderPath || "/ (Vault root)"} · Templates: ${templates.length}${templates.length ? '' : " (cannot export: no .hwpx files directly inside this folder)"}` }),
                 ...templates.slice(0, MAX_LISTED).map((template) => `- ${template}`),
-                ...(templates.length > MAX_LISTED ? [`… 템플릿 ${templates.length - MAX_LISTED}개 더 있음`] : []),
-                `저장 위치: ${options.outputMode === 'fixed_folder' ? `고정 폴더 ${options.fixedOutputFolder}` : '노트와 같은 폴더'} · 파일 이름: ${options.namingPattern} · 같은 이름이 있으면 ${options.appendSequenceOnConflict ? '-1, -2를 붙인다' : 'export_note는 거절한다(outputPath를 다르게 준다)'}`,
-                `H1 앞 쪽 나눔: ${options.pageBreakBeforeH1 ? '켬' : '끔'} · 그림 캡처: ${capture}`,
+                ...(templates.length > MAX_LISTED ? [L({ ko: `… 템플릿 ${templates.length - MAX_LISTED}개 더 있음`, en: `… Templates: ${templates.length - MAX_LISTED} more` })] : []),
+                L({ ko: `저장 위치: ${options.outputMode === 'fixed_folder' ? `고정 폴더 ${options.fixedOutputFolder}` : '노트와 같은 폴더'} · 파일 이름: ${options.namingPattern} · 같은 이름이 있으면 ${options.appendSequenceOnConflict ? '-1, -2를 붙인다' : 'export_note는 거절한다(outputPath를 다르게 준다)'}`, en: `Output location: ${options.outputMode === 'fixed_folder' ? `fixed folder ${options.fixedOutputFolder}` : "same folder as the note"} · File name: ${options.namingPattern} · On a name conflict: ${options.appendSequenceOnConflict ? "append -1, -2" : "export_note rejects the export (specify a different outputPath)"}` }),
+                L({ ko: `H1 앞 쪽 나눔: ${options.pageBreakBeforeH1 ? '켬' : '끔'} · 그림 캡처: ${capture}`, en: `Page break before H1: ${options.pageBreakBeforeH1 ? "on" : "off"} · Image capture: ${capture}` }),
             ];
             return {
                 content: [{ type: 'text', text: lines.join('\n') }],
@@ -786,10 +793,10 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
         async check_export(args, signal): Promise<AgentToolResult> {
             signal?.throwIfAborted();
             const notePath = normalizeNotePath(args.path);
-            if (!/\.md$/i.test(notePath)) throw new ToolError('UNSUPPORTED_FORMAT', 'Markdown 노트(.md)만 내보낼 수 있다.');
+            if (!/\.md$/i.test(notePath)) throw new ToolError('UNSUPPORTED_FORMAT', L({ ko: 'Markdown 노트(.md)만 내보낼 수 있다.', en: "Only Markdown notes (.md) can be exported." }));
             const note = await host.readNote(notePath);
             signal?.throwIfAborted();
-            if (!note) throw new ToolError('NOT_FOUND', `Vault에 이 노트가 없다: ${notePath}`, true);
+            if (!note) throw new ToolError('NOT_FOUND', L({ ko: `Vault에 이 노트가 없다: ${notePath}`, en: `Note not found in the Vault: ${notePath}` }), true);
             const loadedTemplate = await trialTemplate(host, notePath, args.template, signal);
             const template = loadedTemplate.path, templates = host.templates();
             const templateWarnings = await templateOverrideWarnings(host, notePath, args.template, signal);
@@ -816,7 +823,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
                     ? options.captureMermaid
                     : thirdParty.has(language) && options.captureThirdPartyRenderers;
                 if (language === 'mermaid' || thirdParty.has(language)) {
-                    (options.captureRenderedBlocks && capturable ? captured : kept).push(`${language} ${count}개`);
+                    (options.captureRenderedBlocks && capturable ? captured : kept).push(L({ ko: `${language} ${count}개`, en: `${language} ${count}` }));
                 }
             }
 
@@ -858,7 +865,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             }
             const preflightReport = new ConversionReportCollector();
             preflightReport.merge(captureReport(note.markdown, options, { failures: [], contractViolation: false }));
-            if (unboundCapture) preflightReport.add('render_capture_unbound', '타사 렌더 입력을 결속할 수 없어 에이전트 저장 준비가 차단됩니다');
+            if (unboundCapture) preflightReport.add('render_capture_unbound', L({ ko: '타사 렌더 입력을 결속할 수 없어 에이전트 저장 준비가 차단됩니다', en: "Agent save preparation is blocked because third-party rendering inputs cannot be bound" }));
             if (report) preflightReport.merge(report);
             report = preflightReport.toJSON();
 
@@ -877,26 +884,26 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             const outputPath = host.outputPath(notePath);
             const notes = [
                 ...templateWarnings.map((warning) => '- ' + warning.message),
-                ...(missing.length ? [`- 그림 ${missing.length}개를 찾지 못했거나 넣을 수 없는 형식이라 글자로 대체된다: ${listed(missing.map((source) => source || '(경로 없음)'))}`] : []),
-                ...(remote.length ? [`- 원격 그림 ${remote.length}개는 넣지 않고 글자로 대체된다: ${listed(remote)}`] : []),
-                ...(captured.length ? [`- 일반 내보내기에서 그림 캡처를 시도한다(이 점검에서는 캡처와 성공 여부를 확인하지 않았다): ${captured.join(', ')}`] : []),
-                ...(staticCount ? [`- 데이터 전용 차트 ${staticCount}개: 이 점검에서는 렌더링하지 않았다. ${staticAvailable === false ? 'Chart Hands 정적 렌더러가 없어 저장 준비가 차단된다.' : staticCount > 10 ? '10개 제한을 넘어 저장 준비가 차단된다.' : '저장 준비에서 Chart Hands 렌더링과 입력 검증이 필요하다.'}`] : []),
-                ...(kept.length ? [`- 캡처 설정이 꺼져 있어 코드 글자 그대로 들어간다: ${kept.join(', ')}`] : []),
-                ...(shape.rawHtml ? [`- HTML 블록 ${shape.rawHtml}개: 표(<table>) 외의 HTML은 그대로 변환되지 않을 수 있다`] : []),
-                ...(host.exists(outputPath) ? ['- 이 경로에 이미 파일이 있다. export_note는 덮어쓰지 않으므로 outputPath를 다르게 준다'] : []),
+                ...(missing.length ? [L({ ko: `- 그림 ${missing.length}개를 찾지 못했거나 넣을 수 없는 형식이라 글자로 대체된다: ${listed(missing.map((source) => source || '(경로 없음)'))}`, en: `- Images: ${missing.length} missing or in an unsupported format will be replaced with text: ${listed(missing.map((source) => source || "(no path)"))}` })] : []),
+                ...(remote.length ? [L({ ko: `- 원격 그림 ${remote.length}개는 넣지 않고 글자로 대체된다: ${listed(remote)}`, en: `- Remote images: ${remote.length} will be replaced with text instead of embedded: ${listed(remote)}` })] : []),
+                ...(captured.length ? [L({ ko: `- 일반 내보내기에서 그림 캡처를 시도한다(이 점검에서는 캡처와 성공 여부를 확인하지 않았다): ${captured.join(', ')}`, en: `- Normal export will attempt image capture (this check did not capture or verify its success): ${captured.join(', ')}` })] : []),
+                ...(staticCount ? [L({ ko: `- 데이터 전용 차트 ${staticCount}개: 이 점검에서는 렌더링하지 않았다. ${staticAvailable === false ? 'Chart Hands 정적 렌더러가 없어 저장 준비가 차단된다.' : staticCount > 10 ? '10개 제한을 넘어 저장 준비가 차단된다.' : '저장 준비에서 Chart Hands 렌더링과 입력 검증이 필요하다.'}`, en: `- Data-only charts: ${staticCount}: not rendered during this check. ${staticAvailable === false ? "Save preparation is blocked because the Chart Hands static renderer is unavailable." : staticCount > 10 ? "Save preparation is blocked because the limit of 10 was exceeded." : "Save preparation requires Chart Hands rendering and input validation."}` })] : []),
+                ...(kept.length ? [L({ ko: `- 캡처 설정이 꺼져 있어 코드 글자 그대로 들어간다: ${kept.join(', ')}`, en: `- Capture is disabled, so the code will be included as literal text: ${kept.join(', ')}` })] : []),
+                ...(shape.rawHtml ? [L({ ko: `- HTML 블록 ${shape.rawHtml}개: 표(<table>) 외의 HTML은 그대로 변환되지 않을 수 있다`, en: `- HTML blocks: ${shape.rawHtml}: HTML other than tables (<table>) may not be converted as written` })] : []),
+                ...(host.exists(outputPath) ? [L({ ko: '- 이 경로에 이미 파일이 있다. export_note는 덮어쓰지 않으므로 outputPath를 다르게 준다', en: "- A file already exists at this path. export_note never overwrites; specify a different outputPath" })] : []),
                 // Image problems are already listed above from the note itself.
                 ...warningLines(report, ['image_missing', 'image_remote', ...(kept.length ? ['render_capture_disabled'] : [])]),
                 ...(typos.length
-                    ? [`- 템플릿에 오타로 보이는 marker가 있어 그 서식이 적용되지 않는다: ${listed(typos.map((item) => `${item.marker}→${item.suggestion}`))}`]
+                    ? [L({ ko: `- 템플릿에 오타로 보이는 marker가 있어 그 서식이 적용되지 않는다: ${listed(typos.map((item) => `${item.marker}→${item.suggestion}`))}`, en: `- The template contains markers that appear to be typos, so their formatting will not be applied: ${listed(typos.map((item) => `${item.marker}→${item.suggestion}`))}` })]
                     : []),
             ];
             const lines = [
-                `노트 ${notePath} → 내보내면 ${outputPath} (템플릿 ${template}${loadedTemplate.source === 'default' && templates.length > 1 ? `, 템플릿 ${templates.length}개 중 첫 번째로 시험` : ''})`,
+                L({ ko: `노트 ${notePath} → 내보내면 ${outputPath} (템플릿 ${template}${loadedTemplate.source === 'default' && templates.length > 1 ? `, 템플릿 ${templates.length}개 중 첫 번째로 시험` : ''})`, en: `Note ${notePath} → export to ${outputPath} (template ${template}${loadedTemplate.source === 'default' && templates.length > 1 ? `, templates: ${templates.length}; testing with the first` : ''})` }),
                 failure
-                    ? `변환 시험: 실패 — ${failure}`
-                    : `변환 시험: 성공 · HWPX ${bytes.toLocaleString('en-US')}바이트 (Vault에는 아무것도 만들지 않았다)`,
-                `구성: 제목 ${shape.headings.reduce((sum, count) => sum + count, 0)}${headings ? `(${headings})` : ''} · 문단 ${shape.paragraphs} · 표 ${shape.tables} · 목록 ${shape.lists} · 인용 ${shape.quotes} · 코드 블록 ${codeBlocks} · 그림 ${shape.images.length}`,
-                ...(notes.length ? ['주의:', ...notes] : ['주의할 점을 찾지 못했다.']),
+                    ? L({ ko: `변환 시험: 실패 — ${failure}`, en: `Trial conversion: failed — ${failure}` })
+                    : L({ ko: `변환 시험: 성공 · HWPX ${bytes.toLocaleString('en-US')}바이트 (Vault에는 아무것도 만들지 않았다)`, en: `Trial conversion: succeeded · HWPX ${bytes.toLocaleString('en-US')} bytes (nothing was created in the Vault)` }),
+                L({ ko: `구성: 제목 ${shape.headings.reduce((sum, count) => sum + count, 0)}${headings ? `(${headings})` : ''} · 문단 ${shape.paragraphs} · 표 ${shape.tables} · 목록 ${shape.lists} · 인용 ${shape.quotes} · 코드 블록 ${codeBlocks} · 그림 ${shape.images.length}`, en: `Structure: headings ${shape.headings.reduce((sum, count) => sum + count, 0)}${headings ? `(${headings})` : ''} · Paragraphs ${shape.paragraphs} · Tables ${shape.tables} · Lists ${shape.lists} · Quotes ${shape.quotes} · Code blocks ${codeBlocks} · Images ${shape.images.length}` }),
+                ...(notes.length ? [L({ ko: '주의:', en: "Cautions:" }), ...notes] : [L({ ko: '주의할 점을 찾지 못했다.', en: "No issues found." })]),
             ];
             return {
                 content: [{ type: 'text', text: lines.join('\n') }],
@@ -922,7 +929,7 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
             };
         },
         async export_note(): Promise<AgentToolResult> {
-            throw new ToolError('INVALID_ARGUMENT', 'export_note는 host의 저장 승인 절차(commit)로만 실행된다.');
+            throw new ToolError('INVALID_ARGUMENT', L({ ko: 'export_note는 host의 저장 승인 절차(commit)로만 실행된다.', en: "export_note runs only through the host's save approval pipeline (commit)." }));
         },
     };
 
@@ -936,20 +943,20 @@ export function createAgentProvider(host: ExportProviderHost): AgentCapabilityPr
         commit,
         async callTool(name, args, ctx) {
             try {
-                if (disposed) throw new ToolError('DISPOSED', '플러그인이 종료됐다.');
+                if (disposed) throw new ToolError('DISPOSED', L({ ko: '플러그인이 종료됐다.', en: "The plugin has been disposed." }));
                 const handler = Object.prototype.hasOwnProperty.call(handlers, name) ? handlers[name] : undefined;
-                if (!handler) throw new ToolError('UNKNOWN_TOOL', `알 수 없는 도구다: ${name}`);
+                if (!handler) throw new ToolError('UNKNOWN_TOOL', L({ ko: `알 수 없는 도구다: ${name}`, en: `Unknown tool: ${name}` }));
                 const result = await handler(args ?? {}, ctx?.signal);
-                if (ctx?.signal?.aborted) throw new ToolError('CANCELLED', '호출이 취소됐다.');
+                if (ctx?.signal?.aborted) throw new ToolError('CANCELLED', L({ ko: '호출이 취소됐다.', en: "The call was cancelled." }));
                 return result;
             } catch (error) {
-                const actual = ctx?.signal?.aborted ? new ToolError('CANCELLED', '호출이 취소됐다.') : error instanceof RetiredRecordError || error instanceof DialectError ? new DeriveProviderError('INVALID_ARGUMENT', error.message, error.details) : error;
+                const actual = ctx?.signal?.aborted ? new ToolError('CANCELLED', L({ ko: '호출이 취소됐다.', en: "The call was cancelled." })) : error instanceof RetiredRecordError || error instanceof DialectError ? new DeriveProviderError('INVALID_ARGUMENT', error.message, error.details) : error;
                 const known = actual instanceof ToolError || actual instanceof DeriveProviderError;
                 const code = known ? actual.code : 'INTERNAL';
                 const retryable = actual instanceof ToolError && actual.retryable;
                 return {
                     isError: true,
-                    content: [{ type: 'text', text: known ? actual.message : `도구 실행 중 오류: ${actual instanceof Error ? actual.message : String(actual)}` }],
+                    content: [{ type: 'text', text: known ? actual.message : L({ ko: `도구 실행 중 오류: ${actual instanceof Error ? actual.message : String(actual)}`, en: `Error executing tool: ${actual instanceof Error ? actual.message : String(actual)}` }) }],
                     structuredContent: { code, retryable, ...(actual instanceof DeriveProviderError && actual.details ? { details: actual.details } : {}) },
                     _meta: { 'dev.agentinterop/error': { code, retryable, ...(actual instanceof DeriveProviderError && actual.details ? { details: actual.details } : {}) } },
                 };

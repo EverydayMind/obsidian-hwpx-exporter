@@ -1,4 +1,5 @@
 import { readTemplateMode } from '../src/template-derive/templateMetadata';
+import { L, initLocale } from '../src/locale';
 import { loadNoteTemplate, preferredTemplatePaths, assertVaultRealPath, hasNormalizedDiskPath, templateDerivedMode, TEMPLATE_MAX_BYTES, type TemplateLoaderHost } from './templateLoader';
 import type { InputDependency } from './deriveProvider';
 import * as fs from 'fs';
@@ -24,6 +25,7 @@ import {
     type WorkspaceLeaf,
     normalizePath,
     FileSystemAdapter,
+    moment,
 } from 'obsidian';
 import { convertString } from '../src/converterApi';
 import { ObservedBlockRecorder } from '../src/observedBlockIndex';
@@ -47,6 +49,7 @@ import {
     type AgentCapabilityProvider,
 } from './agentProvider';
 import bundledTemplates, { guide } from 'virtual:bundled-templates';
+import { storedCandidates, storedPath } from '../src/storedFormats';
 
 // Where "Install bundled templates" writes when no template folder has been chosen.
 const DEFAULT_TEMPLATE_FOLDER = 'HWPX templates';
@@ -190,40 +193,40 @@ class TemplateInspectionModal extends Modal {
     onOpen(): void {
         const { contentEl } = this;
         const { markers, unknownMarkers, fallbacks, warnings } = this.inspection;
-        contentEl.createEl('h2', { text: `템플릿 검사: ${this.templatePath}` });
+        contentEl.createEl('h2', { text: L({ ko: `템플릿 검사: ${this.templatePath}`, en: `Template inspection: ${this.templatePath}` }) });
 
-        contentEl.createEl('h3', { text: `오타로 보이거나 읽지 않는 marker (${unknownMarkers.length})` });
+        contentEl.createEl('h3', { text: L({ ko: `오타로 보이거나 읽지 않는 marker (${unknownMarkers.length})`, en: `Markers that appear to be typos or are not read (${unknownMarkers.length})` }) });
         if (unknownMarkers.length === 0) {
-            contentEl.createEl('p', { text: '없음' });
+            contentEl.createEl('p', { text: L({ ko: '없음', en: "None" }) });
         } else {
             const list = contentEl.createEl('ul');
             for (const item of unknownMarkers) {
                 list.createEl('li', {
                     text: item.suggestion
                         ? `${item.marker} → ${item.suggestion}?`
-                        : `${item.marker}: 변환기가 읽지 않는 글자다${item.marker === '{{title}}' ? '({{title}}은 노트 본문에서만 바뀐다)' : ''}`,
+                        : L({ ko: `${item.marker}: 변환기가 읽지 않는 글자다${item.marker === '{{title}}' ? '({{title}}은 노트 본문에서만 바뀐다)' : ''}`, en: `${item.marker}: text the converter does not read${item.marker === '{{title}}' ? " ({{title}} is replaced only in the note body)" : ''}` }),
                 });
             }
         }
 
         if (warnings.length > 0) {
-            contentEl.createEl('h3', { text: '불러오면서 생긴 문제' });
+            contentEl.createEl('h3', { text: L({ ko: '불러오면서 생긴 문제', en: "Problems found while loading" }) });
             const list = contentEl.createEl('ul');
             for (const warning of warnings) {
                 list.createEl('li', { text: `${warning.message}: ${warning.examples.join(', ')}` });
             }
         }
 
-        contentEl.createEl('h3', { text: `없어서 기본 모양으로 그리는 요소 (${fallbacks.length})` });
+        contentEl.createEl('h3', { text: L({ ko: `없어서 기본 모양으로 그리는 요소 (${fallbacks.length})`, en: `Elements using default formatting because their markers are missing (${fallbacks.length})` }) });
         const fallbackList = contentEl.createEl('ul');
         for (const item of fallbacks) {
             fallbackList.createEl('li', { text: `${item.marker}: ${item.behavior}` });
         }
 
-        contentEl.createEl('h3', { text: `인식한 marker (${markers.length})` });
+        contentEl.createEl('h3', { text: L({ ko: `인식한 marker (${markers.length})`, en: `Recognized markers (${markers.length})` }) });
         const table = contentEl.createEl('table');
         const head = table.createEl('tr');
-        for (const label of ['marker', '종류', '문단 모양', '글자 모양']) head.createEl('th', { text: label });
+        for (const label of ['marker', L({ ko: '종류', en: "Kind" }), L({ ko: '문단 모양', en: "Paragraph style" }), L({ ko: '글자 모양', en: "Character style" })]) head.createEl('th', { text: label });
         for (const marker of markers) {
             const row = table.createEl('tr');
             row.createEl('td', { text: marker.marker });
@@ -243,6 +246,7 @@ export default class HWPXExporterPlugin extends Plugin {
     private agentProvider?: AgentCapabilityProvider;
 
     async onload(): Promise<void> {
+        initLocale(() => moment.locale());
         // No saved settings means a fresh install: put the templates and the guide in the vault
         // once, so the first export has something to choose from.
         const firstRun = (await this.loadData()) === null;
@@ -661,12 +665,12 @@ export default class HWPXExporterPlugin extends Plugin {
         });
         frozen?.signal?.throwIfAborted();
         if (capture.contractViolation) {
-            new Notice('SVG 캡처 결과를 원문에 대응시키지 못해 원래 Markdown을 유지했습니다.', 8000);
+            new Notice(L({ ko: 'SVG 캡처 결과를 원문에 대응시키지 못해 원래 Markdown을 유지했습니다.', en: "The SVG capture could not be matched to the source. The original Markdown was kept." }), 8000);
         }
         if (capture.failures.length > 0) {
             const mermaidFailures = capture.failures.filter((failure) => failure.hint === 'mermaid').length;
-            const label = mermaidFailures > 0 ? `Mermaid ${mermaidFailures}건` : `${capture.failures.length}건`;
-            new Notice(`${label} 캡처 실패; 원문을 유지했습니다. 콘솔을 확인하세요.`, 8000);
+            const label = mermaidFailures > 0 ? L({ ko: `Mermaid ${mermaidFailures}건`, en: `Mermaid ${mermaidFailures} item(s)` }) : L({ ko: `${capture.failures.length}건`, en: `${capture.failures.length} item(s)` });
+            new Notice(L({ ko: `${label} 캡처 실패; 원문을 유지했습니다. 콘솔을 확인하세요.`, en: `${label} capture failed; the source was kept. Check the console.` }), 8000);
         }
         const markdown = rewriteObsidianImageEmbeds(capture.markdown);
         const inputAbsolutePath = path.join(adapter.getBasePath(), file.path);
@@ -820,7 +824,7 @@ export default class HWPXExporterPlugin extends Plugin {
     private async exportFileWithNotice(file: TFile, templatePath: string): Promise<void> {
         // duration=0 keeps the notice on screen until we hide() it ourselves,
         // right before the completion/failure notice replaces it.
-        const startNotice = new Notice(`HWPX 내보내기 진행 중입니다: ${file.basename}`, 0);
+        const startNotice = new Notice(L({ ko: `HWPX 내보내기 진행 중입니다: ${file.basename}`, en: `Exporting to HWPX: ${file.basename}` }), 0);
 
         let outputPath: string;
         let report: ConversionReport;
@@ -829,20 +833,20 @@ export default class HWPXExporterPlugin extends Plugin {
         } catch (error) {
             console.error('[HWPX Exporter] Export failed', error);
             startNotice.hide();
-            new Notice(`HWPX 내보내기 실패: ${toErrorMessage(error)}`, 10000);
+            new Notice(L({ ko: `HWPX 내보내기 실패: ${toErrorMessage(error)}`, en: `HWPX export failed: ${toErrorMessage(error)}` }), 10000);
             return;
         }
 
         try {
             const openedWith = await this.openExportedFile(outputPath);
             startNotice.hide();
-            new Notice(`HWPX로 내보내고 ${openedWith}에서 열었습니다: ${outputPath}`, 6000);
+            new Notice(L({ ko: `HWPX로 내보내고 ${openedWith}에서 열었습니다: ${outputPath}`, en: `Exported to HWPX and opened in ${openedWith}: ${outputPath}` }), 6000);
             this.showConversionWarnings(report);
         } catch (error) {
             console.error('[HWPX Exporter] Opening exported file failed', error);
             startNotice.hide();
             new Notice(
-                `HWPX로 내보냈지만 파일을 열지 못했습니다: ${outputPath}. ${toErrorMessage(error)}`,
+                L({ ko: `HWPX로 내보냈지만 파일을 열지 못했습니다: ${outputPath}. ${toErrorMessage(error)}`, en: `Exported to HWPX but could not open the file: ${outputPath}. ${toErrorMessage(error)}` }),
                 10000
             );
         }
@@ -851,23 +855,23 @@ export default class HWPXExporterPlugin extends Plugin {
     /** Tell the user what the converter could not express as written (details go to the console). */
     private showConversionWarnings(report: ConversionReport): void {
         if (report.warnings.length === 0) return;
-        new Notice(`HWPX 변환 경고: ${summarizeReport(report)}. 자세한 내용은 개발자 콘솔을 보세요.`, 10000);
+        new Notice(L({ ko: `HWPX 변환 경고: ${summarizeReport(report)}. 자세한 내용은 개발자 콘솔을 보세요.`, en: `HWPX conversion warnings: ${summarizeReport(report)}. See the developer console for details.` }), 10000);
     }
 
     private async exportCurrentNote(): Promise<void> {
         const file = this.app.workspace.getActiveFile();
         if (!file || file.extension.toLowerCase() !== 'md') {
-            new Notice('내보낼 Markdown 노트를 먼저 여세요.');
+            new Notice(L({ ko: '내보낼 Markdown 노트를 먼저 여세요.', en: "Open a Markdown note to export first." }));
             return;
         }
         try { await this.exportFileWithNotice(file, (await loadNoteTemplate(this.templateLoaderHost(), file.path)).path); }
-        catch (error) { new Notice(`템플릿 선택 실패: ${toErrorMessage(error)}`, 10000); }
+        catch (error) { new Notice(L({ ko: `템플릿 선택 실패: ${toErrorMessage(error)}`, en: `Template selection failed: ${toErrorMessage(error)}` }), 10000); }
     }
 
     private async exportCurrentNoteWithTemplate(): Promise<void> {
         const file = this.app.workspace.getActiveFile();
         if (!file || file.extension.toLowerCase() !== 'md') {
-            new Notice('내보낼 Markdown 노트를 먼저 여세요.');
+            new Notice(L({ ko: '내보낼 Markdown 노트를 먼저 여세요.', en: "Open a Markdown note to export first." }));
             return;
         }
 
@@ -879,7 +883,7 @@ export default class HWPXExporterPlugin extends Plugin {
             const preferred = await loadNoteTemplate(this.templateLoaderHost(), file.path);
             const templatePath = await this.promptTemplatePath(preferred);
             if (templatePath) await this.exportFileWithNotice(file, templatePath);
-        } catch (error) { new Notice(`템플릿 선택 실패: ${toErrorMessage(error)}`, 10000); }
+        } catch (error) { new Notice(L({ ko: `템플릿 선택 실패: ${toErrorMessage(error)}`, en: `Template selection failed: ${toErrorMessage(error)}` }), 10000); }
     }
 
     private getMarkdownFilesInFolder(folder: TFolder): TFile[] {
@@ -894,14 +898,14 @@ export default class HWPXExporterPlugin extends Plugin {
     private async exportFolderWithNotice(folder: TFolder, templatePath?: string): Promise<void> {
         const files = this.getMarkdownFilesInFolder(folder);
         if (files.length === 0) {
-            new Notice('선택한 폴더에 Markdown 파일이 없습니다.');
+            new Notice(L({ ko: '선택한 폴더에 Markdown 파일이 없습니다.', en: "The selected folder contains no Markdown files." }));
             return;
         }
 
         // duration=0 keeps the notice on screen until we hide() it ourselves,
         // right before the completion/failure notice replaces it. Progress
         // updates this one notice instead of stacking a new one per step.
-        const startNotice = new Notice(`HWPX 내보내기 진행 중입니다: ${files.length}개 파일`, 0);
+        const startNotice = new Notice(L({ ko: `HWPX 내보내기 진행 중입니다: ${files.length}개 파일`, en: `Exporting to HWPX: ${files.length} file(s)` }), 0);
 
         let successCount = 0;
         const failures: string[] = [];
@@ -909,7 +913,7 @@ export default class HWPXExporterPlugin extends Plugin {
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
-            startNotice.setMessage(`HWPX 내보내기 진행 중입니다: ${i + 1}/${files.length} · ${file.basename}`);
+            startNotice.setMessage(L({ ko: `HWPX 내보내기 진행 중입니다: ${i + 1}/${files.length} · ${file.basename}`, en: `Exporting to HWPX: ${i + 1}/${files.length} · ${file.basename}` }));
             try {
                 const { report } = await this.exportSingleFile(file, templatePath);
                 successCount += 1;
@@ -924,16 +928,16 @@ export default class HWPXExporterPlugin extends Plugin {
         startNotice.hide();
 
         const warningNote = filesWithWarnings > 0
-            ? ` 변환 경고가 있는 파일 ${filesWithWarnings}개(개발자 콘솔 참고).`
+            ? L({ ko: ` 변환 경고가 있는 파일 ${filesWithWarnings}개(개발자 콘솔 참고).`, en: ` Files with conversion warnings: ${filesWithWarnings} (see the developer console).` })
             : '';
         if (failures.length === 0) {
-            new Notice(`HWPX 내보내기 완료: ${files.length}개 중 ${successCount}개 성공.${warningNote}`, warningNote ? 8000 : 5000);
+            new Notice(L({ ko: `HWPX 내보내기 완료: ${files.length}개 중 ${successCount}개 성공.${warningNote}`, en: `HWPX export complete: ${files.length} total, ${successCount} succeeded.${warningNote}` }), warningNote ? 8000 : 5000);
             return;
         }
 
         const preview = failures.slice(0, 3).join(' | ');
         new Notice(
-            `HWPX 내보내기 완료: ${files.length}개 중 ${successCount}개 성공, ${failures.length}개 실패. ${preview}${warningNote}`,
+            L({ ko: `HWPX 내보내기 완료: ${files.length}개 중 ${successCount}개 성공, ${failures.length}개 실패. ${preview}${warningNote}`, en: `HWPX export complete: ${files.length} total, ${successCount} succeeded, ${failures.length} failed. ${preview}${warningNote}` }),
             15000
         );
     }
@@ -956,7 +960,7 @@ export default class HWPXExporterPlugin extends Plugin {
             .sort((a, b) => a.path.localeCompare(b.path));
 
         if (folders.length === 0) {
-            new Notice('이 Vault에 선택할 수 있는 폴더가 없습니다.');
+            new Notice(L({ ko: '이 Vault에 선택할 수 있는 폴더가 없습니다.', en: "This Vault contains no selectable folders." }));
             return null;
         }
 
@@ -982,6 +986,11 @@ export default class HWPXExporterPlugin extends Plugin {
             .sort((a, b) => a.path.localeCompare(b.path));
     }
 
+    getGuideFileName(): string {
+        const folder = this.settings.templateFolderPath.trim().replace(/^[/\\]+/, '') || DEFAULT_TEMPLATE_FOLDER;
+        return storedPath(folder, 'guide', this.app.vault.getFiles?.().map(file => file.path) ?? []).split('/').pop()!;
+    }
+
     /**
      * Writes the templates and the template-writing guide embedded in main.js into the template
      * folder. Existing files are kept, so templates the user edited in Hangul are never replaced.
@@ -994,24 +1003,34 @@ export default class HWPXExporterPlugin extends Plugin {
             if (!(await adapter.exists(folder))) await this.app.vault.createFolder(folder);
             let installed = 0;
             for (const template of bundledTemplates) {
-                const target = normalizePath(`${folder}/${template.name}`);
+                const existing: string[] = [];
+                for (const name of storedCandidates(template.name)) {
+                    const candidate = normalizePath(`${folder}/${name}`);
+                    if (await adapter.exists(candidate)) existing.push(candidate);
+                }
+                const target = storedPath(folder, template.name, existing);
                 if (await adapter.exists(target)) continue;
                 const bytes = Uint8Array.from(atob(template.base64), (char) => char.charCodeAt(0));
                 await this.app.vault.createBinary(target, bytes.buffer);
                 installed += 1;
             }
-            const guidePath = normalizePath(`${folder}/${guide.name}`);
+            const existingGuides: string[] = [];
+            for (const name of storedCandidates('guide')) {
+                const candidate = normalizePath(`${folder}/${name}`);
+                if (await adapter.exists(candidate)) existingGuides.push(candidate);
+            }
+            const guidePath = storedPath(folder, 'guide', existingGuides);
             const guideInstalled = !(await adapter.exists(guidePath));
-            if (guideInstalled) await this.app.vault.create(guidePath, guide.text);
+            if (guideInstalled) await this.app.vault.create(guidePath, L({ ko: guide.text, en: guide.enText }));
             if (this.settings.templateFolderPath !== folder) {
                 this.settings.templateFolderPath = folder;
                 await this.saveSettings();
             }
             const kept = bundledTemplates.length - installed + (guideInstalled ? 0 : 1);
-            new Notice(`${folder}에 템플릿 ${installed}개${guideInstalled ? '와 작성 가이드' : ''}를 넣었습니다.${kept > 0 ? ` 이미 있던 파일 ${kept}개는 그대로 두었습니다.` : ''}`, 6000);
+            new Notice(L({ ko: `${folder}에 템플릿 ${installed}개${guideInstalled ? '와 작성 가이드' : ''}를 넣었습니다.${kept > 0 ? ` 이미 있던 파일 ${kept}개는 그대로 두었습니다.` : ''}`, en: `${folder}: installed templates: ${installed}${guideInstalled ? " and the authoring guide" : ''}.${kept > 0 ? ` Existing files kept: ${kept}.` : ''}` }), 6000);
         } catch (error) {
             console.error('[HWPX Exporter] Template installation failed', error);
-            new Notice(`템플릿 설치 실패: ${toErrorMessage(error)}`, 10000);
+            new Notice(L({ ko: `템플릿 설치 실패: ${toErrorMessage(error)}`, en: `Template installation failed: ${toErrorMessage(error)}` }), 10000);
         }
     }
 
@@ -1023,7 +1042,7 @@ export default class HWPXExporterPlugin extends Plugin {
             new TemplateInspectionModal(this.app, templatePath, inspection).open();
         } catch (error) {
             console.error('[HWPX Exporter] Template inspection failed', error);
-            new Notice(`템플릿 검사 실패: ${toErrorMessage(error)}`, 8000);
+            new Notice(L({ ko: `템플릿 검사 실패: ${toErrorMessage(error)}`, en: `Template inspection failed: ${toErrorMessage(error)}` }), 8000);
         }
     }
 
@@ -1033,7 +1052,7 @@ export default class HWPXExporterPlugin extends Plugin {
 
         if (templateFiles.length === 0) {
             const folderLabel = this.settings.templateFolderPath || '/ (Vault root)';
-            new Notice(`템플릿 폴더(${folderLabel}) 바로 아래에 .hwpx 템플릿이 없습니다. 명령 팔레트의 "Install bundled templates"로 동봉 템플릿을 넣으세요.`, 10000);
+            new Notice(L({ ko: `템플릿 폴더(${folderLabel}) 바로 아래에 .hwpx 템플릿이 없습니다. 명령 팔레트의 "Install bundled templates"로 동봉 템플릿을 넣으세요.`, en: `Template folder (${folderLabel}) has no .hwpx templates directly inside it. Use "Install bundled templates" in the command palette to install the bundled templates.` }), 10000);
             return null;
         }
 
@@ -1151,7 +1170,7 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                     },
                     {
                         name: 'Bundled templates',
-                        desc: `Copy the ${bundledTemplates.length} bundled templates and the template guide (${guide.name}) into the template folder (${DEFAULT_TEMPLATE_FOLDER} when the vault root is selected). Existing files are kept.`,
+                        desc: `Copy the ${bundledTemplates.length} bundled templates and the template guide (${this.plugin.getGuideFileName()}) into the template folder (${DEFAULT_TEMPLATE_FOLDER} when the vault root is selected). Existing files are kept.`,
                         render: (setting) => { setting.addButton((button) => button
                             .setButtonText('Install')
                             .onClick(async () => {
@@ -1160,10 +1179,10 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                             })); },
                     },
                     {
-                        name: '템플릿 검사',
-                        desc: '템플릿이 정의한 marker, 오타로 보이는 marker, marker가 없어 기본 모양으로 그릴 요소를 보여 준다.',
+                        name: L({ ko: '템플릿 검사', en: "Template inspection" }),
+                        desc: L({ ko: '템플릿이 정의한 marker, 오타로 보이는 marker, marker가 없어 기본 모양으로 그릴 요소를 보여 준다.', en: "Shows markers defined by the template, possible marker typos, and elements that will use default formatting because their markers are missing." }),
                         render: (setting) => { setting.addButton((button) => button
-                            .setButtonText('검사')
+                            .setButtonText(L({ ko: '검사', en: "Inspect" }))
                             .onClick(() => {
                                 void this.plugin.inspectTemplateFromPrompt();
                             })); },
@@ -1229,7 +1248,7 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                         'Runs registered code-block processors, including Plotly. Enable only for trusted notes.',
                         'captureThirdPartyRenderers',
                         (value) => {
-                            if (value) new Notice('외부 렌더러는 내보내는 동안 노트 속 코드를 실행합니다. 믿을 수 있는 노트에만 쓰세요.', 10000);
+                            if (value) new Notice(L({ ko: '외부 렌더러는 내보내는 동안 노트 속 코드를 실행합니다. 믿을 수 있는 노트에만 쓰세요.', en: "External renderers execute code in the note during export. Use them only with trusted notes." }), 10000);
                         }),
                     toggle('Force light theme', 'Apply a light theme class to the offscreen container.', 'forceLightThemeOnCapture'),
                     toggle('Aggressive light theme fallback',

@@ -1,4 +1,6 @@
 import { parseDocument, stringify } from 'yaml'
+import { getLocale, type Locale } from '../locale'
+import { storedFormat, storedNoteLocale } from '../storedFormats'
 
 import {
   canonicalDigest,
@@ -23,6 +25,7 @@ function guidanceCheck(guidance: string): void {
 }
 
 type Machine = ProfileMachine | ProfileV2
+const noteLocales = new WeakMap<Machine, Locale>()
 type Validator<T extends Machine> = (input: unknown) => Promise<T>
 export type CompactNoteCodec<T extends Machine> = {
   decode: (value: unknown, frontmatter: Record<string, unknown>) => Promise<T>
@@ -33,6 +36,7 @@ export async function renderNote<T extends Machine>(
   guidance: string,
   newline: string,
   validateProfile: Validator<T>,
+  locale: Locale = noteLocales.get(input) ?? getLocale(),
 ): Promise<string> {
   const profile = await validateProfile(input)
   guidanceCheck(guidance)
@@ -58,14 +62,14 @@ export async function renderNote<T extends Machine>(
     '---',
     frontmatter,
     '---',
-    '## 서식 요약',
+    storedFormat('styleSummary', locale),
     summary,
     markers.machineStart,
     '```report-style-profile-json',
     JSON.stringify(profile),
     '```',
     markers.machineEnd,
-    '## 작성 지침',
+    storedFormat('guidance', locale),
     markers.guidanceStart,
     '',
   ]
@@ -78,6 +82,7 @@ export type ParsedNote<T extends Machine> = {
   machine: T
   guidance: string
   newline: string
+  locale: Locale
 }
 export async function parseNote<T extends Machine>(
   note: string,
@@ -147,5 +152,7 @@ export async function parseNote<T extends Machine>(
     throw new Error('Invalid guidance section boundary.')
   const guidance = raw.replace(/^\r?\n/, '').replace(/\r?\n$/, '')
   guidanceCheck(guidance)
-  return { machine, guidance, newline: note.includes('\r\n') ? '\r\n' : '\n' }
+  const locale = storedNoteLocale(note.slice(0, positions.machineStart))
+  noteLocales.set(machine, locale)
+  return { machine, guidance, newline: note.includes('\r\n') ? '\r\n' : '\n', locale }
 }

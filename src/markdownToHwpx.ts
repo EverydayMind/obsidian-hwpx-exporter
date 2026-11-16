@@ -1,3 +1,4 @@
+import { L } from "./locale";
 import { parseVariantMarker } from './template-derive/variantMarkers';
 /**
  * Pandoc-like AST to HWPX XML converter.
@@ -306,18 +307,18 @@ export class MarkdownToHwpx {
         this.sectionXmlContent = this.substituteMetaMarkers(this.sectionXmlContent);
         for (const { marker } of invalidStyleVariantMarkers(this.sectionXmlContent)) {
             this.report.add('style_variant_name_invalid',
-                '변형 이름에 공백이 있어 이 규칙을 쓰지 않는다. 공백 대신 `_`를 쓴 이름으로 바꾼다', marker);
+                L({ ko: '변형 이름에 공백이 있어 이 규칙을 쓰지 않는다. 공백 대신 `_`를 쓴 이름으로 바꾼다', en: "This rule is ignored because its variant name contains spaces. Rename it using `_` instead of spaces" }), marker);
         }
         // {{KIND|option=value}}: options go to a side table, markers back to their plain form.
         const markers = normalizeTemplateMarkers(this.sectionXmlContent);
         this.sectionXmlContent = markers.xml;
         this.markerOptions = markers.options;
         for (const marker of markers.unknownOptions) {
-            this.report.add('template_option_unknown', '템플릿 marker의 알 수 없는 옵션을 무시함', marker);
+            this.report.add('template_option_unknown', L({ ko: '템플릿 marker의 알 수 없는 옵션을 무시함', en: "Unknown template marker options were ignored" }), marker);
         }
         const tableBreak = this.markerOptions.get('{{TABLE}}')?.pageBreak;
         if (tableBreak !== undefined && (typeof tableBreak !== 'string' || !/^(?:cell|table)$/i.test(tableBreak))) {
-            this.report.add('template_option_unknown', '표 쪽 나눔 옵션을 무시하고 템플릿 설정을 사용함', `TABLE|pageBreak=${tableBreak}`);
+            this.report.add('template_option_unknown', L({ ko: '표 쪽 나눔 옵션을 무시하고 템플릿 설정을 사용함', en: "Table page-break options were ignored; template settings were used" }), `TABLE|pageBreak=${tableBreak}`);
         }
         this.styles = new StyleRegistry(this.headerXmlContent);
         if (this.sectionXmlContent) {
@@ -497,7 +498,7 @@ export class MarkdownToHwpx {
             const key = unescapeXml(rawKey).trim();
             const value = this.metaText(key);
             if (value === null) {
-                this.report.add('meta_missing', 'frontmatter에 없는 META 값을 빈칸으로 둠', key);
+                this.report.add('meta_missing', L({ ko: 'frontmatter에 없는 META 값을 빈칸으로 둠', en: "META values missing from frontmatter were left blank" }), key);
                 return '';
             }
             return escapeXml(rawFormat ? formatMetaDate(value, unescapeXml(rawFormat)) : value);
@@ -719,7 +720,7 @@ export class MarkdownToHwpx {
             if (!/^(?:1(?:\.1)*[.)]?|\(1(?:\.1)*\))$/.test(token)) continue;
             if (this.headingPrefixRules.some(rule => rule.marker === marker)) {
                 console.warn(`[md2hwpx] Duplicate heading prefix marker "${marker}"; keeping first definition.`);
-                this.report.add('template_marker_duplicate', '템플릿 marker가 두 번 정의되어 첫 정의를 씀', marker);
+                this.report.add('template_marker_duplicate', L({ ko: '템플릿 marker가 두 번 정의되어 첫 정의를 씀', en: "A template marker was defined twice; the first definition was used" }), marker);
                 continue;
             }
             const style = this.extractGeneralPlaceholderStyle(sectionXml, marker, match.index);
@@ -750,7 +751,7 @@ export class MarkdownToHwpx {
 
             if (!token) {
                 console.warn(`[md2hwpx] Ignoring prefix placeholder without a bullet token: ${marker}`);
-                this.report.add('template_marker_ignored', '템플릿 marker를 인식하지 못해 무시함', marker);
+                this.report.add('template_marker_ignored', L({ ko: '템플릿 marker를 인식하지 못해 무시함', en: "Unrecognized template markers were ignored" }), marker);
                 continue;
             }
 
@@ -763,7 +764,7 @@ export class MarkdownToHwpx {
                 kind = 'literal';
             } else {
                 console.warn(`[md2hwpx] Ignoring unsupported prefix placeholder token: ${marker}`);
-                this.report.add('template_marker_ignored', '템플릿 marker를 인식하지 못해 무시함', marker);
+                this.report.add('template_marker_ignored', L({ ko: '템플릿 marker를 인식하지 못해 무시함', en: "Unrecognized template markers were ignored" }), marker);
                 continue;
             }
 
@@ -776,7 +777,7 @@ export class MarkdownToHwpx {
                 console.warn(
                     `[md2hwpx] Ignoring prefix placeholder token with XML-reserved characters: ${marker}`
                 );
-                this.report.add('template_marker_ignored', '템플릿 marker를 인식하지 못해 무시함', marker);
+                this.report.add('template_marker_ignored', L({ ko: '템플릿 marker를 인식하지 못해 무시함', en: "Unrecognized template markers were ignored" }), marker);
                 continue;
             }
 
@@ -784,7 +785,7 @@ export class MarkdownToHwpx {
                 console.warn(
                     `[md2hwpx] Duplicate prefix placeholder marker "${marker}" — keeping first definition.`
                 );
-                this.report.add('template_marker_duplicate', '템플릿 marker가 두 번 정의되어 첫 정의를 씀', marker);
+                this.report.add('template_marker_duplicate', L({ ko: '템플릿 marker가 두 번 정의되어 첫 정의를 씀', en: "A template marker was defined twice; the first definition was used" }), marker);
                 continue;
             }
 
@@ -1358,7 +1359,7 @@ export class MarkdownToHwpx {
             }
         });
         this.report.add(
-            'control_chars_removed', 'XML에 넣을 수 없는 제어문자를 지움', undefined, this.removedControlCharCount
+            'control_chars_removed', L({ ko: 'XML에 넣을 수 없는 제어문자를 지움', en: "Control characters invalid in XML were removed" }), undefined, this.removedControlCharCount
         );
 
         // Inject extra char/para pr definitions into header XML
@@ -1368,7 +1369,7 @@ export class MarkdownToHwpx {
         }
 
         const start = applyBodyStartControls(this.sectionXmlContent, bodyParts.join('\n'));
-        if (start.unused) this.report.add('body_start_controls_unused', '본문이 비어 본문 시작 컨트롤을 붙이지 않음', undefined, start.unused);
+        if (start.unused) this.report.add('body_start_controls_unused', L({ ko: '본문이 비어 본문 시작 컨트롤을 붙이지 않음', en: "The body is empty; body-start controls were not attached" }), undefined, start.unused);
         const body = start.body;
         return {
             xmlBody: layout ? [layout.before, body, layout.after].filter(Boolean).join('\n') : body,
@@ -2018,7 +2019,7 @@ export class MarkdownToHwpx {
         const key = `${base}:${variant}`;
         if (key in styles) return key;
         if (!this.autoMetaVariant)
-            this.report.add('style_variant_missing', '템플릿에 없는 변형 스타일이라 기본 스타일을 씀', `{{${markerPrefix}${base}:${variant}}}`);
+            this.report.add('style_variant_missing', L({ ko: '템플릿에 없는 변형 스타일이라 기본 스타일을 씀', en: "The variant style is missing from the template; the default style was used" }), `{{${markerPrefix}${base}:${variant}}}`);
         return base;
     }
 
@@ -2031,8 +2032,8 @@ export class MarkdownToHwpx {
         if (!variant) return;
         this.report.add(
             'style_variant_unsupported',
-            '일부 요소는 지정한 변형을 지원하지 않아 무시함',
-            `{{${marker}}} (변형: ${variant})`
+            L({ ko: '일부 요소는 지정한 변형을 지원하지 않아 무시함', en: "Some elements do not support the specified variant; it was ignored" }),
+            L({ ko: `{{${marker}}} (변형: ${variant})`, en: `{{${marker}}} (variant: ${variant})` })
         );
     }
 
@@ -2102,7 +2103,7 @@ export class MarkdownToHwpx {
 
     /** Record a block drawn without a template rule for its marker (e.g. H4, QUOTE, LIST_BULLET_2). */
     private noteStyleFallback(marker: string): void {
-        this.report.add('style_fallback', '템플릿에 규칙이 없어 기본 모양으로 그린 요소', `{{${marker}}}`);
+        this.report.add('style_fallback', L({ ko: '템플릿에 규칙이 없어 기본 모양으로 그린 요소', en: "Elements rendered with default formatting because the template has no rule" }), `{{${marker}}}`);
     }
 
     // Obsidian callout types → the emoji quote styles that already exist, used
@@ -2550,7 +2551,7 @@ export class MarkdownToHwpx {
         const colCount = specs.length;
         if (colCount === 0) {
             console.warn('[md2hwpx] Skipping table because it has no columns in the parsed Markdown AST.');
-            this.report.add('table_skipped', '열이나 행이 없는 표를 건너뜀');
+            this.report.add('table_skipped', L({ ko: '열이나 행이 없는 표를 건너뜀', en: "Tables with no columns or rows were skipped" }));
             return '';
         }
 
@@ -2598,7 +2599,7 @@ export class MarkdownToHwpx {
         const rowCount = allRows.length;
         if (rowCount === 0) {
             console.warn('[md2hwpx] Skipping table because it has no rows in the parsed Markdown AST.');
-            this.report.add('table_skipped', '열이나 행이 없는 표를 건너뜀');
+            this.report.add('table_skipped', L({ ko: '열이나 행이 없는 표를 건너뜀', en: "Tables with no columns or rows were skipped" }));
             return '';
         }
 
@@ -2913,7 +2914,7 @@ export class MarkdownToHwpx {
         const option = this.markerOptions.get('{{TABLE}}')?.pageBreak;
         if (typeof option !== 'string' || !/^(?:cell|table)$/i.test(option)) return tag;
         if (option.toLowerCase() === 'table') {
-            this.report.add('table_row_page_break', '행 단위 쪽 나눔은 긴 셀이 잘릴 수 있으므로 실제 한글에서 모든 쪽 확인 필요');
+            this.report.add('table_row_page_break', L({ ko: '행 단위 쪽 나눔은 긴 셀이 잘릴 수 있으므로 실제 한글에서 모든 쪽 확인 필요', en: "Row-level page breaks may truncate long cells; check every page in Hangul" }));
         }
         const attribute = `pageBreak="${option.toUpperCase()}"`;
         return /\bpageBreak="[^"]*"/.test(tag)
@@ -2984,7 +2985,7 @@ export class MarkdownToHwpx {
                 console.warn(
                     '[md2hwpx] No CELL_* table template rule was found; using generated table XML fallback.'
                 );
-                this.report.add('table_template_fallback', '템플릿에 표 규칙(CELL_*)이 없어 기본 표로 만듦');
+                this.report.add('table_template_fallback', L({ ko: '템플릿에 표 규칙(CELL_*)이 없어 기본 표로 만듦', en: "The template has no table rules (CELL_*); a default table was created" }));
                 this.warnedMissingTableRuleTemplate = true;
             }
             return null;
@@ -2994,7 +2995,7 @@ export class MarkdownToHwpx {
         if (!innerTable) {
             if (!this.warnedMissingTableRuleTemplate) {
                 console.warn('[md2hwpx] Table template rule was found, but no inner CELL_* table could be located.');
-                this.report.add('table_template_fallback', '템플릿 표 규칙 안의 CELL_* 표를 찾지 못해 기본 표로 만듦');
+                this.report.add('table_template_fallback', L({ ko: '템플릿 표 규칙 안의 CELL_* 표를 찾지 못해 기본 표로 만듦', en: "No CELL_* table was found inside the template table rule; a default table was created" }));
                 this.warnedMissingTableRuleTemplate = true;
             }
             return null;
@@ -3201,13 +3202,13 @@ export class MarkdownToHwpx {
     ): string {
         const src = content[2][0];
         if (!src) {
-            this.report.add('image_missing', '그림 파일을 찾지 못해 글자로 남김', '(경로 없음)');
+            this.report.add('image_missing', L({ ko: '그림 파일을 찾지 못해 글자로 남김', en: "Image files could not be found and were left as text" }), L({ ko: '(경로 없음)', en: "(no path)" }));
             const alt = getPlainText(content[1]).trim();
-            return this.textRun(`[Image: ${alt || '경로 없음'}]`, charPrId, new Set());
+            return this.textRun(`[Image: ${alt || L({ ko: '경로 없음', en: "no path" })}]`, charPrId, new Set());
         }
 
         if (/^[a-z]+:\/\//i.test(src) || /^data:/i.test(src)) {
-            this.report.add('image_remote', '원격·data 그림은 포함하지 않고 글자로 남김', src.slice(0, 200));
+            this.report.add('image_remote', L({ ko: '원격·data 그림은 포함하지 않고 글자로 남김', en: "Remote and data images were left as text instead of embedded" }), src.slice(0, 200));
             return this.textRun(`[Image: ${src}]`, charPrId, new Set());
         }
 
@@ -3233,7 +3234,7 @@ export class MarkdownToHwpx {
             throw new ConversionError(`Bound image asset has no bytes: ${src}`);
         }
         if (this.strictImageAssetResolver && !asset) {
-            this.report.add('image_missing', '그림 파일을 찾지 못해 글자로 남김', src);
+            this.report.add('image_missing', L({ ko: '그림 파일을 찾지 못해 글자로 남김', en: "Image files could not be found and were left as text" }), src);
             return this.textRun(`[Image: ${src}]`, charPrId, new Set());
         }
         if (asset && !asset.bytes && !asset.absolutePath) {
@@ -3276,7 +3277,7 @@ export class MarkdownToHwpx {
                 MarkdownToHwpx.validateImagePath(src, this.inputDir);
             } catch {
                 console.warn(`[md2hwpx] Skipping image due to security: ${src}`);
-                this.report.add('image_blocked', '노트 폴더 밖을 가리키는 그림을 보안상 건너뜀', src);
+                this.report.add('image_blocked', L({ ko: '노트 폴더 밖을 가리키는 그림을 보안상 건너뜀', en: "Images pointing outside the note folder were skipped for security" }), src);
                 return this.textRun(`[Image: ${src}]`, charPrId, new Set());
             }
             const candidates: string[] = [src];
@@ -3284,14 +3285,14 @@ export class MarkdownToHwpx {
                 candidates.push(path.join(this.inputDir, src));
             }
             if (!candidates.some((candidate) => fs.existsSync(candidate))) {
-                this.report.add('image_missing', '그림 파일을 찾지 못해 글자로 남김', src);
+                this.report.add('image_missing', L({ ko: '그림 파일을 찾지 못해 글자로 남김', en: "Image files could not be found and were left as text" }), src);
                 return this.textRun(`[Image: ${src}]`, charPrId, new Set());
             }
         }
 
         if (this.images.length >= this.config.MAX_IMAGE_COUNT) {
             console.warn('[md2hwpx] Max image count reached');
-            this.report.add('image_limit', '그림 개수 한도를 넘은 그림을 글자로 남김', src);
+            this.report.add('image_limit', L({ ko: '그림 개수 한도를 넘은 그림을 글자로 남김', en: "Images exceeding the image count limit were left as text" }), src);
             return this.textRun(`[Image limit exceeded: ${src}]`, charPrId, new Set());
         }
 
@@ -3304,7 +3305,7 @@ export class MarkdownToHwpx {
                     throw new ConversionError(`Captured image bytes could not be read: ${src}`);
                 }
                 console.warn(`[md2hwpx] Image could not be read: ${src}`, error);
-                this.report.add('image_unreadable', '그림 파일을 읽지 못함', src);
+                this.report.add('image_unreadable', L({ ko: '그림 파일을 읽지 못함', en: "Image files could not be read" }), src);
             }
         }
 
@@ -3854,7 +3855,7 @@ export class MarkdownToHwpx {
         for (const token of this.counterTokens(combined)) {
             const owner = runs.find(run => run.decoded && token.index >= run.start && token.index + token.text.length <= run.start + run.prefix.length);
             if (!owner) {
-                this.report.add('counter_token_split', '번호 토큰이 run 경계에 걸쳐 원문을 유지함', token.text);
+                this.report.add('counter_token_split', L({ ko: '번호 토큰이 run 경계에 걸쳐 원문을 유지함', en: "A numbering token spans run boundaries; the source was kept" }), token.text);
                 continue;
             }
             owner.edits.push({ index: token.index - owner.start, length: token.text.length, value: this.ordinalText(counter, token.style, combined) });
@@ -3872,7 +3873,7 @@ export class MarkdownToHwpx {
     /** The counter in one ordinal style; past the end of a finite sequence the plain number, reported. */
     private ordinalText(counter: number, style: string, source: string): string {
         const overflow = (): string => {
-            this.report.add('counter_out_of_range', '번호가 템플릿 번호 형식의 범위를 넘어 숫자로 표시함', `${source.trim()} → ${counter}`);
+            this.report.add('counter_out_of_range', L({ ko: '번호가 템플릿 번호 형식의 범위를 넘어 숫자로 표시함', en: "A number exceeds the template numbering format range and is displayed as a numeral" }), `${source.trim()} → ${counter}`);
             return String(counter);
         };
         const fromRange = (first: number, size: number): string =>

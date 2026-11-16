@@ -9,7 +9,8 @@ HWPX Exporter exports Markdown notes to Hangul (Hancom Office) HWPX documents. T
 - **Markdown → HWPX**: headings, paragraphs, bold/italic/strikethrough/highlight, links, lists (nested, numbered, tasks), tables (alignment, column widths), code blocks, quotes and Obsidian callouts, footnotes as real Hangul footnotes, images and `![[embeds]]`, inline `$math$`, horizontal rules and front matter.
 - **Template-based formatting**: an `.hwpx` template holds markers such as `{{H1}}`, `{{BODY}}` and `{{QUOTE}}`. The character and paragraph formatting at each marker is applied to the matching part of the note. Design lives in the template, not in the plugin.
 - **Bundled templates**: a sample template with every marker, a Hangul report template, a KORDOC-style report form and six templates that reproduce popular themes (Obsidian default, Minimal, Things, AnuPpuccin, Blue Topaz, Primary).
-- **Template guide**: a Markdown note, *HWPX 템플릿 작성 가이드* (template writing guide, in Korean), is installed next to the templates.
+- **Template guide**: a Markdown note, *HWPX template authoring guide*, is installed next to the templates.
+- **App language**: the interface, the agent tool wording and the names of the installed templates and guide follow the app language (Korean when Obsidian is set to Korean, English otherwise). Files installed earlier keep their names.
 - **Template inspector**: lists the markers a template defines, flags likely typos and shows what falls back to default formatting.
 - **Rendered blocks**: Mermaid diagrams and SVG files can be captured as images. Other code-block renderers are opt-in.
 - **API for AI agent plugins**: an agentinterop v1 provider (see below).
@@ -32,7 +33,7 @@ To restore the bundled templates or install them into another folder, run **Inst
 
 ## Writing your own template
 
-Copy `견본 템플릿.hwpx` (sample template), open it in Hangul, change the formatting of each marker and save it under a new name in the template folder. The installed guide, *HWPX 템플릿 작성 가이드*, explains every marker and option. Run **Inspect HWPX template** after editing.
+Copy `Sample template.hwpx` (`견본 템플릿.hwpx` in Korean), open it in Hangul, change the formatting of each marker and save it under a new name in the template folder. The installed guide explains every marker and option. Run **Inspect HWPX template** after editing.
 
 ## Settings
 

@@ -1,3 +1,4 @@
+import { L } from "./locale";
 import { parseVariantMarker } from './template-derive/variantMarkers';
 /**
  * Markdown AST to Pandoc-like dict adapter.
@@ -172,7 +173,7 @@ function reportLiteralEmphasis(blocks: PandocBlock[], report: ConversionReportCo
                 const end = start + match[0].length;
                 if (match[2] !== undefined && /[A-Za-z0-9]/.test(text[start - 1] ?? '') && /[A-Za-z0-9]/.test(text[end] ?? '')) continue;
                 const from = Math.max(0, start - 20);
-                report.add('emphasis_literal', '강조 기호로 보이는 글자가 굵게·기울임으로 바뀌지 않고 남음', text.slice(from, from + 80));
+                report.add('emphasis_literal', L({ ko: '강조 기호로 보이는 글자가 굵게·기울임으로 바뀌지 않고 남음', en: "Characters that look like emphasis delimiters remain without becoming bold or italic" }), text.slice(from, from + 80));
             }
             text = '';
         };
@@ -336,7 +337,7 @@ export class MarkoToPandocAdapter {
             );
             this.report.add(
                 'table_parse_mismatch',
-                '표처럼 보이는 줄이 표로 해석되지 않음(머리 행과 구분 행을 확인)',
+                L({ ko: '표처럼 보이는 줄이 표로 해석되지 않음(머리 행과 구분 행을 확인)', en: "Lines that look like a table were not parsed as one (check the header and separator rows)" }),
                 undefined,
                 tableLikeSeparatorCount - tableTokenCount
             );
@@ -1106,7 +1107,7 @@ export class MarkoToPandocAdapter {
                 // A reference without a definition stays as written.
                 const blocks = this.footnotes.get(token.text ?? '');
                 if (!blocks) {
-                    this.report.add('footnote_undefined', '정의가 없는 각주 참조를 글자 그대로 남김', token.raw);
+                    this.report.add('footnote_undefined', L({ ko: '정의가 없는 각주 참조를 글자 그대로 남김', en: "Footnote references without definitions were left as literal text" }), token.raw);
                     return this.convertRawText(token.raw ?? '');
                 }
                 return { t: 'Note', c: blocks };

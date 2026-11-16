@@ -1,3 +1,4 @@
+import { L } from "./locale";
 /**
  * Template inspector: which markers a template defines, which look like typos,
  * and what falls back to a default because its marker is missing. It loads the
@@ -39,24 +40,24 @@ const CALLOUT_TYPES = [
     'DANGER', 'ERROR', 'BUG', 'EXAMPLE', 'QUOTE', 'CITE',
 ];
 
-const FALLBACKS: Array<{ markers: string[]; behavior: string }> = [
-    { markers: ['BODY'], behavior: '템플릿의 바탕글 모양으로 쓴다' },
-    { markers: ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'], behavior: '템플릿의 개요 스타일이 있으면 그것을, 없으면 바탕글을 쓴다' },
-    { markers: ['CODE'], behavior: '코드블록을 BODY 모양으로 쓴다(박스 없음)' },
-    { markers: ['CODE_INLINE', 'CODE'], behavior: '인라인 코드를 주변 글자 모양 그대로 쓴다' },
-    { markers: ['LINK'], behavior: '링크를 파란 글자와 밑줄로 쓴다(설정 기본값)' },
-    { markers: ['QUOTE'], behavior: '인용문을 BODY 모양에 고정 들여쓰기로 쓴다' },
-    { markers: ['CALLOUT_TITLE'], behavior: '콜아웃 제목을 콜아웃 모양의 굵은 글자로 쓴다' },
-    { markers: ['HR'], behavior: '수평선을 빈 문단 2개로 쓴다' },
-    { markers: ['HIGHLIGHT'], behavior: '==형광==을 노란 음영으로 쓴다(설정 기본값)' },
-    { markers: ['FOOTNOTE'], behavior: '각주를 템플릿의 각주 스타일(없으면 BODY)로 쓴다' },
-    { markers: ['CAPTION'], behavior: '그림에 캡션 문단을 만들지 않는다' },
-    { markers: ['MATH'], behavior: '$$ 수식 블록을 BODY 문단으로 쓴다' },
-    { markers: ['MATH_INLINE'], behavior: '$ 인라인 수식을 주변 글자 모양 그대로 쓴다' },
-    { markers: ['TASK_OPEN', 'TASK_DONE'], behavior: '할 일 상자를 [ ] / [x] 글자로 쓴다' },
-    { markers: ['LIST_BULLET_1'], behavior: '글머리표 목록을 BODY 모양에 기본 글머리(ㅇ, -, ∙ …)로 쓴다' },
-    { markers: ['LIST_ORDERED_1'], behavior: '번호 목록을 BODY 모양에 "1." 번호로 쓴다' },
-    { markers: ['CELL_HEADER_LEFT', 'CELL_TOP_LEFT', 'CELL_BODY'], behavior: '표를 기본 표 XML로 만든다' },
+const fallbacksForLocale = (): Array<{ markers: string[]; behavior: string }> => [
+    { markers: ['BODY'], behavior: L({ ko: '템플릿의 바탕글 모양으로 쓴다', en: "Uses the template's body paragraph style" }) },
+    { markers: ['H1', 'H2', 'H3', 'H4', 'H5', 'H6'], behavior: L({ ko: '템플릿의 개요 스타일이 있으면 그것을, 없으면 바탕글을 쓴다', en: "Uses the template's outline style when available, otherwise the body style" }) },
+    { markers: ['CODE'], behavior: L({ ko: '코드블록을 BODY 모양으로 쓴다(박스 없음)', en: "Renders code blocks with the BODY style (no box)" }) },
+    { markers: ['CODE_INLINE', 'CODE'], behavior: L({ ko: '인라인 코드를 주변 글자 모양 그대로 쓴다', en: "Renders inline code with the surrounding character style" }) },
+    { markers: ['LINK'], behavior: L({ ko: '링크를 파란 글자와 밑줄로 쓴다(설정 기본값)', en: "Renders links in blue with an underline (default settings)" }) },
+    { markers: ['QUOTE'], behavior: L({ ko: '인용문을 BODY 모양에 고정 들여쓰기로 쓴다', en: "Renders quotes with the BODY style and a fixed indent" }) },
+    { markers: ['CALLOUT_TITLE'], behavior: L({ ko: '콜아웃 제목을 콜아웃 모양의 굵은 글자로 쓴다', en: "Renders callout titles in bold using the callout style" }) },
+    { markers: ['HR'], behavior: L({ ko: '수평선을 빈 문단 2개로 쓴다', en: "Renders horizontal rules as two empty paragraphs" }) },
+    { markers: ['HIGHLIGHT'], behavior: L({ ko: '==형광==을 노란 음영으로 쓴다(설정 기본값)', en: "Renders ==highlight== with yellow shading (default settings)" }) },
+    { markers: ['FOOTNOTE'], behavior: L({ ko: '각주를 템플릿의 각주 스타일(없으면 BODY)로 쓴다', en: "Renders footnotes with the template's footnote style (BODY if absent)" }) },
+    { markers: ['CAPTION'], behavior: L({ ko: '그림에 캡션 문단을 만들지 않는다', en: "Does not create caption paragraphs for images" }) },
+    { markers: ['MATH'], behavior: L({ ko: '$$ 수식 블록을 BODY 문단으로 쓴다', en: "Renders $$ math blocks as BODY paragraphs" }) },
+    { markers: ['MATH_INLINE'], behavior: L({ ko: '$ 인라인 수식을 주변 글자 모양 그대로 쓴다', en: "Renders $ inline math with the surrounding character style" }) },
+    { markers: ['TASK_OPEN', 'TASK_DONE'], behavior: L({ ko: '할 일 상자를 [ ] / [x] 글자로 쓴다', en: "Renders task checkboxes as [ ] / [x] text" }) },
+    { markers: ['LIST_BULLET_1'], behavior: L({ ko: '글머리표 목록을 BODY 모양에 기본 글머리(ㅇ, -, ∙ …)로 쓴다', en: "Renders bullet lists with the BODY style and default bullets (ㅇ, -, ∙ …)" }) },
+    { markers: ['LIST_ORDERED_1'], behavior: L({ ko: '번호 목록을 BODY 모양에 "1." 번호로 쓴다', en: "Renders ordered lists with the BODY style and \"1.\" numbering" }) },
+    { markers: ['CELL_HEADER_LEFT', 'CELL_TOP_LEFT', 'CELL_BODY'], behavior: L({ ko: '표를 기본 표 XML로 만든다', en: "Creates tables using default table XML" }) },
 ];
 
 export async function inspectTemplate(templatePath: string): Promise<TemplateInspection> {
@@ -108,7 +109,7 @@ export function inspectTemplateXml(headerXml: string, sectionXml: string): Templ
         unknownMarkers.push({ marker, suggestion: name === 'title' ? null : closestMarker(name) });
     }
 
-    const fallbacks = FALLBACKS
+    const fallbacks = fallbacksForLocale()
         .filter(({ markers: names }) => !names.some((name) => recognized.has(`{{${name}}}`)))
         .map(({ markers: names, behavior }) => ({ marker: names.map((name) => `{{${name}}}`).join(' / '), behavior }));
 

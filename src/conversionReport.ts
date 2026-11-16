@@ -1,3 +1,4 @@
+import { L } from "./locale";
 /**
  * Conversion report: what the converter could not express as written, so a
  * user (Obsidian notice), a script (convertString result) or an agent tool
@@ -86,7 +87,7 @@ export class ConversionReportCollector {
 
 /** Short Korean summary for a notice, e.g. "그림을 찾지 못함 2건 · 표 템플릿 규칙 없음". */
 export function summarizeReport(report: ConversionReport, maxItems = 3): string {
-    const parts = report.warnings.slice(0, maxItems).map((w) => (w.count > 1 ? `${w.message} ${w.count}건` : w.message));
+    const parts = report.warnings.slice(0, maxItems).map((w) => (w.count > 1 ? L({ ko: `${w.message} ${w.count}건`, en: `${w.message} ${w.count} item(s)` }) : w.message));
     const rest = report.warnings.length - parts.length;
-    return rest > 0 ? `${parts.join(' · ')} 외 ${rest}종` : parts.join(' · ');
+    return rest > 0 ? L({ ko: `${parts.join(' · ')} 외 ${rest}종`, en: `${parts.join(' · ')} plus ${rest} other type(s)` }) : parts.join(' · ');
 }

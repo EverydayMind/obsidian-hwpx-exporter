@@ -3,6 +3,7 @@ import { parseCompactProfileNote } from './compactProfileNote'
 import { type ProfileV2, validateProfileV2 } from './profileV2'
 import { validateProfile } from './schema'
 import type { ProfileMachine } from './types'
+import type { Locale } from '../locale'
 
 export function profileSummary(profile: ProfileMachine) {
   return {
@@ -30,11 +31,11 @@ export function profileSummary(profile: ProfileMachine) {
   }
 }
 
-export type ParsedProfileNote = { machine: ProfileMachine; guidance: string; newline: string }
+export type ParsedProfileNote = { machine: ProfileMachine; guidance: string; newline: string; locale?: 'ko' | 'en' }
 export const parseProfileNote = (note: string) => parseNote(note, validateProfile)
-export const renderProfileNote = (profile: ProfileMachine, guidance: string, newline = '\n') => renderNote(profile, guidance, newline, validateProfile)
+export const renderProfileNote = (profile: ProfileMachine, guidance: string, newline = '\n', locale?: Locale) => renderNote(profile, guidance, newline, validateProfile, locale)
 export const parseProfileV2Note = (note: string) => parseNote(note, validateProfileV2)
-export const renderProfileV2Note = (profile: ProfileV2, guidance: string, newline = '\n') => renderNote(profile, guidance, newline, validateProfileV2)
+export const renderProfileV2Note = (profile: ProfileV2, guidance: string, newline = '\n', locale?: Locale) => renderNote(profile, guidance, newline, validateProfileV2, locale)
 export const parseAnyProfileNote = (note: string) => /<!-- verbex:report-style:machine:start -->\r?\n```report-style-compact-profile-json\r?\n/.test(note) ? parseCompactProfileNote(note) : parseNote<ProfileMachine | ProfileV2>(note, (input) => {
   if (input && typeof input === 'object' && 'schema' in input && input.schema === 'report-style-profile/2') return validateProfileV2(input)
   return validateProfile(input)

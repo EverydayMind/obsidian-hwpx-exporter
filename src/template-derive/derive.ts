@@ -1,3 +1,4 @@
+import { L } from '../locale';
 import { resolveFixedRanges, type RangeReplacement } from './bundleValidation';
 import { parseDeriveBundleV3, type DeriveBundleV3 } from './deriveBundleV3';
 import { hierarchyRule } from './hierarchyRule';
@@ -99,17 +100,17 @@ function ruleMarkerText(marker: string, source: Element): string {
 }
 function ruleDescription(marker: string): string {
   const space = spaceMarkerParts(marker), variant = parseVariantMarker(marker);
-  let label = `${marker} 문단`;
-  if (marker === 'BODY') label = '본문(기호 없는 문단)';
-  else if (marker === 'H1') label = '문서 제목(# 제목)';
-  else if (marker === 'H2') label = '장 제목(## 제목)';
+  let label = L({ ko: `${marker} 문단`, en: `${marker} paragraph` });
+  if (marker === 'BODY') label = L({ ko: '본문(기호 없는 문단)', en: 'Body (paragraph without a prefix)' });
+  else if (marker === 'H1') label = L({ ko: '문서 제목(# 제목)', en: 'Document title (# heading)' });
+  else if (marker === 'H2') label = L({ ko: '장 제목(## 제목)', en: 'Chapter title (## heading)' });
   else if (/^H[3-9]$/.test(marker)) {
     const level = Number(marker.slice(1));
-    label = `제목 ${level}단계(${'#'.repeat(level)} …)`;
-  } else if (variant?.base === 'BODY') label = `${variant.variant} 문단(<!-- hwpx:style=${variant.variant} -->)`;
-  else if (space) label = `여백 규칙(${space.rule} 앞 블록이 ${space.previous}일 때)`;
-  else if (!/^[A-Za-z_]/.test(marker)) label = `${marker} 로 시작하는 문단`;
-  return `${label} — 이 규칙의 모양을 고치면 해당 문단에 적용됩니다.`;
+    label = L({ ko: `제목 ${level}단계(${'#'.repeat(level)} …)`, en: `Heading level ${level} (${'#'.repeat(level)} …)` });
+  } else if (variant?.base === 'BODY') label = L({ ko: `${variant.variant} 문단(<!-- hwpx:style=${variant.variant} -->)`, en: `${variant.variant} paragraph (<!-- hwpx:style=${variant.variant} -->)` });
+  else if (space) label = L({ ko: `여백 규칙(${space.rule} 앞 블록이 ${space.previous}일 때)`, en: `Spacing rule (${space.rule} following ${space.previous})` });
+  else if (!/^[A-Za-z_]/.test(marker)) label = L({ ko: `${marker} 로 시작하는 문단`, en: `Paragraph starting with ${marker}` });
+  return L({ ko: `${label} — 이 규칙의 모양을 고치면 해당 문단에 적용됩니다.`, en: `${label} — Edit this rule's formatting to change the matching paragraphs.` });
 }
 function ruleTable(document: Document, source: Element, marker: string, width: number, borderFill: string, decomposition = false, hierarchyHeader?: Document, prefix = '', spacingSource?: Element): Element {
   const sourceTable = ancestor(source, 'tbl');
@@ -252,7 +253,7 @@ async function buildDerived(input: DeriveSpec): Promise<{ bytes: Uint8Array; rep
   let recordNode: Element | undefined;
   if (v2) {
     recordNode = cleanParagraph(section, bodyParagraph, RECORD_MARKER); root.appendChild(recordNode);
-    root.appendChild(cleanParagraph(section, bodyParagraph, '목차 등 고정 영역의 글은 샘플 그대로 출력됩니다. 새 문서에서는 한글에서 고치세요.'));
+    root.appendChild(cleanParagraph(section, bodyParagraph, L({ ko: '목차 등 고정 영역의 글은 샘플 그대로 출력됩니다. 새 문서에서는 한글에서 고치세요.', en: 'Fixed regions, including the table of contents, keep the sample text. Edit them in Hangul for each new document.' })));
     const top = indexed.nodes.filter(n => n.topLevelOrder !== null), before = fixedRegions.filter(r => r.position === 'before_content');
     const last = before.length ? top.findIndex(n => n.ref === before[before.length - 1].ref) : -1;
     const start = last + 1;

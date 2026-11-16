@@ -1,3 +1,4 @@
+import { L } from "../locale";
 import type JSZip from 'jszip';
 import { createInflateRaw } from 'node:zlib';
 
@@ -42,7 +43,7 @@ export async function verifyInflatedBudget(zip: JSZip, limit = MAX_INFLATED_BYTE
     const knownSize = typeof declared === 'number' && Number.isSafeInteger(declared) && declared >= 0 ? declared : undefined;
     let partBytes = 0;
     const data = (file as unknown as { _data?: { compressedContent?: unknown; compression?: { magic?: unknown } } })._data;
-    if (knownSize !== undefined && knownSize > limit - total) throw new ZipBudgetError('워크북의 압축 해제 크기가 너무 큽니다.');
+    if (knownSize !== undefined && knownSize > limit - total) throw new ZipBudgetError(L({ ko: '워크북의 압축 해제 크기가 너무 큽니다.', en: "The workbook's uncompressed size is too large." }));
     if (data?.compressedContent instanceof Uint8Array && data.compression?.magic === '\x08\x00') {
       if (knownSize === undefined) throw new Error('Invalid ZIP entry size');
       const inflater = createInflateRaw();
@@ -55,7 +56,7 @@ export async function verifyInflatedBudget(zip: JSZip, limit = MAX_INFLATED_BYTE
           signal?.throwIfAborted();
           const length = (chunk as Uint8Array).byteLength;
           total += length; partBytes += length;
-          if (total > limit) throw new ZipBudgetError('워크북의 압축 해제 크기가 너무 큽니다.');
+          if (total > limit) throw new ZipBudgetError(L({ ko: '워크북의 압축 해제 크기가 너무 큽니다.', en: "The workbook's uncompressed size is too large." }));
           if (partBytes > knownSize) throw new Error('ZIP entry size mismatch');
         }
         signal?.throwIfAborted();
@@ -93,7 +94,7 @@ export async function verifyInflatedBudget(zip: JSZip, limit = MAX_INFLATED_BYTE
         if (total > limit) {
           stopped = true;
           stream.pause();
-          reject(new ZipBudgetError('워크북의 압축 해제 크기가 너무 큽니다.'));
+          reject(new ZipBudgetError(L({ ko: '워크북의 압축 해제 크기가 너무 큽니다.', en: "The workbook's uncompressed size is too large." })));
         } else if (knownSize !== undefined && partBytes > knownSize) {
           stopped = true;
           stream.pause();

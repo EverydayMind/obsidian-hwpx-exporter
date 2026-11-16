@@ -17,9 +17,9 @@ export function selectBundledTemplates(templatesDir) {
         .map((name) => path.join(templatesDir, name));
 }
 
-/** The one Markdown file in the guide folder. */
+/** The original guide; locale variants are loaded alongside it. */
 export function selectGuide(guideDir) {
-    const guides = fs.readdirSync(guideDir).filter((name) => name.endsWith('.md'));
+    const guides = fs.readdirSync(guideDir).filter((name) => name.endsWith('.md') && !name.endsWith('.en.md'));
     if (guides.length !== 1) throw new Error(`Expected exactly one guide in ${guideDir}, found ${guides.length}`);
     return path.join(guideDir, guides[0]);
 }
@@ -37,11 +37,12 @@ export function bundledTemplatesPlugin(files, guideFile) {
                     name: path.basename(file),
                     base64: fs.readFileSync(file).toString('base64'),
                 }));
-                const guide = { name: path.basename(guideFile), text: fs.readFileSync(guideFile, 'utf8') };
+                const enFile = path.join(path.dirname(guideFile), 'guide.en.md');
+                const guide = { name: path.basename(guideFile), text: fs.readFileSync(guideFile, 'utf8'), enText: fs.readFileSync(enFile, 'utf8') };
                 return {
                     contents: `export default ${JSON.stringify(templates)};\nexport const guide = ${JSON.stringify(guide)};`,
                     loader: 'js',
-                    watchFiles: [...files, guideFile],
+                    watchFiles: [...files, guideFile, enFile],
                 };
             });
         },

@@ -1,3 +1,4 @@
+import { L } from "../src/locale";
 import { ConversionReportCollector, type ConversionReport } from '../src/conversionReport';
 import { stripObsidianComments } from '../src/obsidianComments';
 import { scanRenderableBlocks } from '../src/renderableBlocks';
@@ -18,11 +19,11 @@ export function captureReport(
         }
     }
     for (const block of scanRenderableBlocks(stripObsidianComments(markdown), { languages: disabled, includeSvgFiles: false })) {
-        report.add('render_capture_disabled', '렌더 캡처가 꺼져 그림이 포함되지 않았을 수 있습니다', block.hint);
+        report.add('render_capture_disabled', L({ ko: '렌더 캡처가 꺼져 그림이 포함되지 않았을 수 있습니다', en: "Rendered-block capture is disabled; images may be missing" }), block.hint);
     }
     for (const failure of result.failures) {
-        report.add('render_capture_failed', '렌더 캡처에 실패하거나 제한에 걸려 그림이 포함되지 않았습니다', failure.hint);
+        report.add('render_capture_failed', L({ ko: '렌더 캡처에 실패하거나 제한에 걸려 그림이 포함되지 않았습니다', en: "Images were not included because rendered-block capture failed or reached a limit" }), failure.hint);
     }
-    if (result.contractViolation) report.add('render_capture_mapping_failed', '렌더 캡처 연결에 실패하여 원문을 유지했습니다');
+    if (result.contractViolation) report.add('render_capture_mapping_failed', L({ ko: '렌더 캡처 연결에 실패하여 원문을 유지했습니다', en: "The source was kept because rendered-block capture could not be linked" }));
     return report.toJSON();
 }
