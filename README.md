@@ -31,6 +31,8 @@ To restore the bundled templates or install them into another folder, run **Inst
 - **Inspect HWPX template**
 - **Install bundled templates**
 
+Command names follow the app language.
+
 ## Writing your own template
 
 Copy `Sample template.hwpx` (`견본 템플릿.hwpx` in Korean), open it in Hangul, change the formatting of each marker and save it under a new name in the template folder. The installed guide explains every marker and option. Run **Inspect HWPX template** after editing.
@@ -67,7 +69,7 @@ The plugin works the same without an agent host.
 - **Files it writes through the vault API**: on first run, the bundled templates and the guide in `HWPX templates`; an agent's approved `export_note` result.
 - **Opening files**: after an export from a command, the file is opened with the system's default app for `.hwpx` (usually Hangul).
 - **No network access, no telemetry, no account.**
-- **Third-party renderers** run other plugins' code-block processors during export. They are off by default. Turn them on only for notes you trust.
+- **Third-party renderers** run other plugins' code-block processors during export. They are off by default. Turn them on only for notes you trust. When an export leaves such blocks out, the warning lists them and offers a button that turns the capture on.
 
 ## Installation
 
