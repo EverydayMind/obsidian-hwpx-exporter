@@ -56,6 +56,17 @@ const DEFAULT_TEMPLATE_FOLDER = 'HWPX templates';
 // When this plugin is enabled, a single-note export opens in its editor instead of the OS default app.
 const HWP_HANDS_PLUGIN_ID = 'hwp-hands';
 
+function installBundledTemplatesCommandName(): string {
+    return L({ ko: '동봉 템플릿 설치', en: 'Install bundled templates' });
+}
+
+function templateFolderDescription(templateCount: number): string {
+    return L({
+        ko: `내보낼 때 선택할 HWPX 템플릿이 들어 있는 폴더입니다. 이 폴더에서 쓸 수 있는 HWPX 템플릿: ${templateCount}개`,
+        en: `Choose the vault folder containing the HWPX templates offered during export. HWPX templates available in this folder: ${templateCount}`,
+    });
+}
+
 type OutputMode = 'same_as_source' | 'fixed_folder';
 type NamingPattern = '{basename}.hwpx' | '{basename}-{yyyyMMdd}.hwpx';
 
@@ -147,7 +158,7 @@ abstract class AwaitableFuzzyModal<T> extends FuzzySuggestModal<T> {
 class FolderSuggestModal extends AwaitableFuzzyModal<TFolder> {
     constructor(app: App, private readonly folders: TFolder[]) {
         super(app);
-        this.setPlaceholder('Select folder to export');
+        this.setPlaceholder(L({ ko: '내보낼 폴더를 선택하세요', en: 'Select folder to export' }));
     }
 
     getItems(): TFolder[] {
@@ -155,7 +166,7 @@ class FolderSuggestModal extends AwaitableFuzzyModal<TFolder> {
     }
 
     getItemText(item: TFolder): string {
-        return item.path.length > 0 ? item.path : '/ (Vault root)';
+        return item.path.length > 0 ? item.path : L({ ko: '/ (Vault 최상위)', en: '/ (Vault root)' });
     }
 
     onChooseItem(item: TFolder): void {
@@ -167,7 +178,7 @@ class FolderSuggestModal extends AwaitableFuzzyModal<TFolder> {
 class TemplateSuggestModal extends AwaitableFuzzyModal<TFile> {
     constructor(app: App, private readonly files: TFile[]) {
         super(app);
-        this.setPlaceholder('Select .hwpx template');
+        this.setPlaceholder(L({ ko: '.hwpx 템플릿을 선택하세요', en: 'Select .hwpx template' }));
     }
 
     getItems(): TFile[] {
@@ -244,6 +255,7 @@ class TemplateInspectionModal extends Modal {
 export default class HWPXExporterPlugin extends Plugin {
     settings: HWPXExporterSettings = { ...DEFAULT_SETTINGS };
     private agentProvider?: AgentCapabilityProvider;
+    private settingTab?: HWPXExporterSettingTab;
 
     async onload(): Promise<void> {
         initLocale(() => moment.locale());
@@ -294,7 +306,7 @@ export default class HWPXExporterPlugin extends Plugin {
 
         this.addCommand({
             id: 'install-bundled-templates',
-            name: L({ ko: '동봉 템플릿 설치', en: 'Install bundled templates' }),
+            name: installBundledTemplatesCommandName(),
             callback: () => {
                 void this.installBundledTemplates();
             },
@@ -312,7 +324,7 @@ export default class HWPXExporterPlugin extends Plugin {
             this.app.workspace.on('file-menu', (menu: Menu, file: TAbstractFile) => {
                 if (file instanceof TFile && file.extension.toLowerCase() === 'md') {
                     menu.addItem((item) => {
-                        item.setTitle('Export to HWPX')
+                        item.setTitle(L({ ko: 'HWPX로 내보내기 (템플릿 적용)', en: 'Export to HWPX (with template)' }))
                             .setIcon('file-output')
                             .onClick(() => void this.exportFileAfterTemplatePrompt(file));
                     });
@@ -320,7 +332,7 @@ export default class HWPXExporterPlugin extends Plugin {
 
                 if (file instanceof TFolder) {
                     menu.addItem((item) => {
-                        item.setTitle('Export folder to HWPX')
+                        item.setTitle(L({ ko: '폴더를 HWPX로 내보내기 (템플릿 적용)', en: 'Export folder to HWPX (with template)' }))
                             .setIcon('folder-output')
                             .onClick(() => void this.exportFolderAfterTemplatePrompt(file));
                     });
@@ -328,7 +340,8 @@ export default class HWPXExporterPlugin extends Plugin {
             })
         );
 
-        this.addSettingTab(new HWPXExporterSettingTab(this.app, this));
+        this.settingTab = new HWPXExporterSettingTab(this.app, this);
+        this.addSettingTab(this.settingTab);
     }
 
     onunload(): void {
@@ -758,7 +771,7 @@ export default class HWPXExporterPlugin extends Plugin {
     private async openExportedFile(outputVaultPath: string): Promise<string> {
         if (await this.openInHwpHands(outputVaultPath)) return 'HWP Hands';
         await this.openWithDefaultApp(outputVaultPath);
-        return 'the default app';
+        return L({ ko: '기본 앱', en: 'the default app' });
     }
 
     /** False means "fall back to the default app": HWP Hands is not enabled, the Vault never indexed the file, or opening failed. */
@@ -1098,7 +1111,13 @@ export default class HWPXExporterPlugin extends Plugin {
                 await this.saveSettings();
             }
             const kept = bundledTemplates.length - installed + (guideInstalled ? 0 : 1);
-            new Notice(L({ ko: `${folder}에 템플릿 ${installed}개${guideInstalled ? '와 작성 가이드' : ''}를 넣었습니다.${kept > 0 ? ` 이미 있던 파일 ${kept}개는 그대로 두었습니다.` : ''}`, en: `${folder}: installed templates: ${installed}${guideInstalled ? " and the authoring guide" : ''}.${kept > 0 ? ` Existing files kept: ${kept}.` : ''}` }), 6000);
+            new Notice(L({
+                ko: `${folder}에 템플릿 ${installed}개${guideInstalled ? '와 작성 가이드' : ''}를 넣었습니다.${kept > 0 ? ` 이미 있던 파일 ${kept}개는 그대로 두었습니다.` : ''} 내보내기에 쓰는 서식 파일입니다. 폴더는 설정에서 바꿀 수 있습니다.`,
+                en: `${folder}: installed templates: ${installed}${guideInstalled ? " and the authoring guide" : ''}.${kept > 0 ? ` Existing files kept: ${kept}.` : ''} These are the format files used for export. You can change the folder in settings.`,
+            }), 6000);
+            if (this.settingTab?.isOpen()) {
+                this.settingTab.refresh();
+            }
         } catch (error) {
             console.error('[HWPX Exporter] Template installation failed', error);
             new Notice(L({ ko: `템플릿 설치 실패: ${toErrorMessage(error)}`, en: `Template installation failed: ${toErrorMessage(error)}` }), 10000);
@@ -1122,8 +1141,12 @@ export default class HWPXExporterPlugin extends Plugin {
             .map(p => this.app.vault.getAbstractFileByPath(p)).filter((f): f is TFile => f instanceof TFile);
 
         if (templateFiles.length === 0) {
-            const folderLabel = this.settings.templateFolderPath || '/ (Vault root)';
-            new Notice(L({ ko: `템플릿 폴더(${folderLabel}) 바로 아래에 .hwpx 템플릿이 없습니다. 명령 팔레트의 "Install bundled templates"로 동봉 템플릿을 넣으세요.`, en: `Template folder (${folderLabel}) has no .hwpx templates directly inside it. Use "Install bundled templates" in the command palette to install the bundled templates.` }), 10000);
+            const folderLabel = this.settings.templateFolderPath || L({ ko: '/ (Vault 최상위)', en: '/ (Vault root)' });
+            const installCommand = installBundledTemplatesCommandName();
+            new Notice(L({
+                ko: `템플릿 폴더(${folderLabel}) 바로 아래에 .hwpx 템플릿이 없습니다. 명령 팔레트의 "${installCommand}"로 동봉 템플릿을 넣으세요.`,
+                en: `Template folder (${folderLabel}) has no .hwpx templates directly inside it. Use "${installCommand}" in the command palette to install the bundled templates.`,
+            }), 10000);
             return null;
         }
 
@@ -1192,8 +1215,13 @@ class HWPXExporterSettingTab extends PluginSettingTab {
         }
     }
 
+    /** Whether this setting tab is currently mounted in the UI. */
+    isOpen(): boolean {
+        return Boolean(this.containerEl?.isConnected);
+    }
+
     /** Re-renders after a change that alters other rows (descriptions, visibility). */
-    private refresh(): void {
+    refresh(): void {
         // update() exists from Obsidian 1.13 (it re-reads the definitions and re-renders);
         // older versions render the rows directly.
         const tab = this as { update?: () => void };
@@ -1225,25 +1253,31 @@ class HWPXExporterSettingTab extends PluginSettingTab {
             {
                 rows: [
                     {
-                        name: 'Template folder',
-                        desc: `Choose the vault folder containing the HWPX templates offered during export. ${this.plugin.getTemplateFilesInSelectedFolder().length} HWPX template(s) available in this folder.`,
-                        render: (setting) => { setting.addDropdown((dropdown) => {
-                            for (const folder of this.plugin.getVaultFolders()) {
-                                dropdown.addOption(folder.path, folder.path || '/ (Vault root)');
-                            }
-                            dropdown.setValue(settings.templateFolderPath);
-                            dropdown.onChange(async (value) => {
-                                settings.templateFolderPath = value;
-                                await save();
-                                this.refresh();
+                        name: L({ ko: '템플릿 폴더', en: 'Template folder' }),
+                        desc: templateFolderDescription(this.plugin.getTemplateFilesInSelectedFolder().length),
+                        render: (setting) => {
+                            setting.setDesc(templateFolderDescription(this.plugin.getTemplateFilesInSelectedFolder().length));
+                            setting.addDropdown((dropdown) => {
+                                for (const folder of this.plugin.getVaultFolders()) {
+                                    dropdown.addOption(folder.path, folder.path || L({ ko: '/ (Vault 최상위)', en: '/ (Vault root)' }));
+                                }
+                                dropdown.setValue(settings.templateFolderPath);
+                                dropdown.onChange(async (value) => {
+                                    settings.templateFolderPath = value;
+                                    await save();
+                                    this.refresh();
+                                });
                             });
-                        }); },
+                        },
                     },
                     {
-                        name: 'Bundled templates',
-                        desc: `Copy the ${bundledTemplates.length} bundled templates and the template guide (${this.plugin.getGuideFileName()}) into the template folder (${DEFAULT_TEMPLATE_FOLDER} when the vault root is selected). Existing files are kept.`,
+                        name: L({ ko: '동봉 템플릿', en: 'Bundled templates' }),
+                        desc: L({
+                            ko: `동봉 템플릿 ${bundledTemplates.length}개와 작성 가이드(${this.plugin.getGuideFileName()})를 템플릿 폴더(Vault 최상위가 선택되어 있으면 ${DEFAULT_TEMPLATE_FOLDER})에 복사합니다. 이미 있는 파일은 그대로 둡니다.`,
+                            en: `Copy the ${bundledTemplates.length} bundled templates and the template guide (${this.plugin.getGuideFileName()}) into the template folder (${DEFAULT_TEMPLATE_FOLDER} when the vault root is selected). Existing files are kept.`,
+                        }),
                         render: (setting) => { setting.addButton((button) => button
-                            .setButtonText('Install')
+                            .setButtonText(L({ ko: '설치', en: 'Install' }))
                             .onClick(async () => {
                                 await this.plugin.installBundledTemplates();
                                 this.refresh();
@@ -1259,11 +1293,11 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                             })); },
                     },
                     {
-                        name: 'Output mode',
-                        desc: 'Choose where exported .hwpx files will be written.',
+                        name: L({ ko: '저장 위치', en: 'Output mode' }),
+                        desc: L({ ko: '내보낸 HWPX 파일을 어디에 저장할지 선택하세요.', en: 'Choose where exported .hwpx files will be written.' }),
                         render: (setting) => { setting.addDropdown((dropdown) => {
-                            dropdown.addOption('same_as_source', 'Same folder as source note');
-                            dropdown.addOption('fixed_folder', 'Fixed output folder');
+                            dropdown.addOption('same_as_source', L({ ko: '원본 노트와 같은 폴더', en: 'Same folder as source note' }));
+                            dropdown.addOption('fixed_folder', L({ ko: '고정 출력 폴더', en: 'Fixed output folder' }));
                             dropdown.setValue(settings.outputMode);
                             dropdown.onChange(async (value) => {
                                 settings.outputMode = value as OutputMode;
@@ -1273,8 +1307,8 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                         }); },
                     },
                     {
-                        name: 'Fixed output folder',
-                        desc: 'Vault-relative folder path for generated .hwpx files.',
+                        name: L({ ko: '고정 출력 폴더', en: 'Fixed output folder' }),
+                        desc: L({ ko: '생성된 HWPX 파일을 저장할 Vault 기준 폴더 경로입니다.', en: 'Vault-relative folder path for generated .hwpx files.' }),
                         visible: () => settings.outputMode === 'fixed_folder',
                         render: (setting) => { setting.addText((text) => {
                             text.setPlaceholder('exports/hwpx')
@@ -1286,8 +1320,8 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                         }); },
                     },
                     {
-                        name: 'Naming pattern',
-                        desc: 'Output filename pattern.',
+                        name: L({ ko: '파일 이름 규칙', en: 'Naming pattern' }),
+                        desc: L({ ko: '내보낼 파일의 이름 형식입니다.', en: 'Output filename pattern.' }),
                         render: (setting) => { setting.addDropdown((dropdown) => {
                             dropdown.addOption('{basename}.hwpx', '{basename}.hwpx');
                             dropdown.addOption('{basename}-{yyyyMMdd}.hwpx', '{basename}-{yyyyMMdd}.hwpx');
@@ -1298,46 +1332,80 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                             });
                         }); },
                     },
-                    toggle('Append sequence on filename conflict',
-                        'If the output file exists, append -1, -2, ... instead of overwriting it.',
-                        'appendSequenceOnConflict'),
+                    toggle(
+                        L({ ko: '이름이 겹칠 때 번호 붙이기', en: 'Append sequence on filename conflict' }),
+                        L({ ko: '같은 이름의 파일이 이미 있으면 덮어쓰지 않고 -1, -2 등을 붙입니다.', en: 'If the output file exists, append -1, -2, ... instead of overwriting it.' }),
+                        'appendSequenceOnConflict'
+                    ),
                 ],
             },
             {
-                heading: 'Conversion',
+                heading: L({ ko: '변환', en: 'Conversion' }),
                 rows: [
-                    toggle('Page break before H1', 'Insert page break before H1 when H1 is not the first block.', 'pageBreakBeforeH1'),
+                    toggle(
+                        L({ ko: 'H1 앞에서 쪽 나누기', en: 'Page break before H1' }),
+                        L({ ko: '첫 번째 블록이 아닌 H1 제목 앞에서 쪽을 나눕니다.', en: 'Insert page break before H1 when H1 is not the first block.' }),
+                        'pageBreakBeforeH1'
+                    ),
                 ],
             },
             {
-                heading: 'Rendered block capture',
+                heading: L({ ko: '렌더 블록 그림 캡처', en: 'Rendered block capture' }),
                 rows: [
-                    toggle('Capture rendered blocks', 'Master switch. Turning this off never calls MarkdownRenderer.', 'captureRenderedBlocks'),
-                    toggle('Capture Mermaid', 'Capture Mermaid code blocks as PNG.', 'captureMermaid'),
-                    toggle('Capture static SVG files', 'Read SVG bytes directly from the vault and rasterize them.', 'captureSvgFiles'),
-                    toggle('Capture third-party renderers',
-                        'Runs registered code-block processors, including Plotly. Enable only for trusted notes.',
+                    toggle(
+                        L({ ko: '렌더 블록 캡처', en: 'Capture rendered blocks' }),
+                        L({ ko: '끄면 어떤 블록도 그림으로 바꾸지 않고 내보냅니다.', en: 'Turn off to export without rendering any blocks as images.' }),
+                        'captureRenderedBlocks'
+                    ),
+                    toggle(
+                        L({ ko: 'Mermaid 캡처', en: 'Capture Mermaid' }),
+                        L({ ko: 'Mermaid 코드 블록을 PNG 그림으로 캡처합니다.', en: 'Capture Mermaid code blocks as PNG.' }),
+                        'captureMermaid'
+                    ),
+                    toggle(
+                        L({ ko: '정적 SVG 파일 캡처', en: 'Capture static SVG files' }),
+                        L({ ko: 'Vault의 SVG 파일을 읽어 PNG 그림으로 바꿉니다.', en: 'Read SVG bytes directly from the vault and rasterize them.' }),
+                        'captureSvgFiles'
+                    ),
+                    toggle(
+                        L({ ko: '다른 플러그인 렌더러 캡처', en: 'Capture third-party renderers' }),
+                        L({ ko: 'Plotly 등 다른 플러그인이 만든 코드 블록도 그림으로 그립니다. 믿을 수 있는 노트에만 켜세요.', en: 'Runs block renderers from other plugins, including Plotly. Enable only for trusted notes.' }),
                         'captureThirdPartyRenderers',
                         (value) => {
                             if (value) new Notice(L({ ko: '외부 렌더러는 내보내는 동안 노트 속 코드를 실행합니다. 믿을 수 있는 노트에만 쓰세요.', en: "External renderers execute code in the note during export. Use them only with trusted notes." }), 10000);
-                        }),
-                    toggle('Force light theme', 'Apply a light theme class to the offscreen container.', 'forceLightThemeOnCapture'),
-                    toggle('Aggressive light theme fallback',
-                        'Temporarily toggles body classes during capture and may visibly flash the workspace.',
-                        'forceLightThemeAggressive'),
-                    toggle('Disable Mermaid HTML labels', 'Avoid foreignObject output where Mermaid supports this setting.', 'mermaidDisableHtmlLabels'),
-                    toggle('Use native image size', 'Use captured/intrinsic image dimensions before clamping.', 'useNativeImageSize'),
+                        }
+                    ),
+                    toggle(
+                        L({ ko: '밝은 테마 강제 적용', en: 'Force light theme' }),
+                        L({ ko: '다크 모드를 쓰는 중에도 그림을 밝은 배경과 글자색으로 캡처합니다.', en: 'Capture images in a light theme even when Obsidian is using dark mode.' }),
+                        'forceLightThemeOnCapture'
+                    ),
+                    toggle(
+                        L({ ko: '강력한 밝은 테마 전환', en: 'Aggressive light theme fallback' }),
+                        L({ ko: '캡처하는 동안 화면 전체 테마를 잠시 밝게 바꿉니다. 작업 화면이 잠깐 깜빡일 수 있습니다.', en: 'Temporarily switches the workspace theme to light during capture, which may cause a brief flash.' }),
+                        'forceLightThemeAggressive'
+                    ),
+                    toggle(
+                        L({ ko: 'Mermaid 글자를 일반 글자로 그리기', en: 'Disable Mermaid HTML labels' }),
+                        L({ ko: 'Mermaid 글자를 일반 글자로 그려 그림으로 바꿀 때 사라지지 않게 합니다.', en: 'Draw Mermaid labels as plain text so they survive conversion to images.' }),
+                        'mermaidDisableHtmlLabels'
+                    ),
+                    toggle(
+                        L({ ko: '원래 그림 크기 유지', en: 'Use native image size' }),
+                        L({ ko: '쪽에 들어가면 그림의 원래 크기를 유지합니다.', en: 'Keep the original image size when it fits the page.' }),
+                        'useNativeImageSize'
+                    ),
                     {
-                        name: 'Raster scale',
-                        desc: 'Requested raster scale from 1 to 4; pixel budgets may reduce it.',
+                        name: L({ ko: '그림 해상도 배율', en: 'Raster scale' }),
+                        desc: L({ ko: '그림 선명도(1~4)입니다. 큰 그림은 더 낮은 값으로 저장될 수 있습니다.', en: 'Image sharpness from 1 to 4. Large images may be saved at a lower value.' }),
                         render: (setting) => { setting.addText((text) => text.setValue(String(settings.rasterScale)).onChange(async (value) => {
                             settings.rasterScale = Math.min(4, Math.max(1, Number.parseFloat(value) || DEFAULT_SETTINGS.rasterScale));
                             await save();
                         })); },
                     },
                     {
-                        name: 'Capture width (CSS px)',
-                        desc: 'Use 0 for the 150 mm output-width estimate.',
+                        name: L({ ko: '캡처 너비(CSS px)', en: 'Capture width (CSS px)' }),
+                        desc: L({ ko: '0으로 두면 기본 본문 너비(150mm)에 맞춰 캡처합니다.', en: 'Use 0 for the 150 mm output-width estimate.' }),
                         render: (setting) => { setting.addText((text) => text.setValue(String(settings.captureWidthPx)).onChange(async (value) => {
                             settings.captureWidthPx = Math.max(0, Number.parseInt(value, 10) || 0);
                             await save();
@@ -1346,12 +1414,12 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                 ],
             },
             {
-                heading: 'Security limits',
+                heading: L({ ko: '안전 제한', en: 'Security limits' }),
                 rows: [
-                    positiveInt('Max input file size (MB)', 'maxInputFileSizeMb'),
-                    positiveInt('Max template file size (MB)', 'maxTemplateFileSizeMb'),
-                    positiveInt('Max nesting depth', 'maxNestingDepth'),
-                    positiveInt('Max image count', 'maxImageCount'),
+                    positiveInt(L({ ko: '최대 입력 파일 크기 (MB)', en: 'Max input file size (MB)' }), 'maxInputFileSizeMb'),
+                    positiveInt(L({ ko: '최대 템플릿 파일 크기 (MB)', en: 'Max template file size (MB)' }), 'maxTemplateFileSizeMb'),
+                    positiveInt(L({ ko: '최대 중첩 깊이', en: 'Max nesting depth' }), 'maxNestingDepth'),
+                    positiveInt(L({ ko: '최대 그림 개수', en: 'Max image count' }), 'maxImageCount'),
                 ],
             },
         ];
