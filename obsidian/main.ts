@@ -862,10 +862,12 @@ export default class HWPXExporterPlugin extends Plugin {
     }
 
     /** Tell the user what the converter could not express as written (details go to the console). */
-    private appendCaptureFailures(fragment: DocumentFragment, failures: CaptureFailure[]): void {
+    private appendCaptureFailures(fragment: DocumentFragment | HTMLElement, failures: CaptureFailure[]): void {
         if (!failures.length) return;
         const details = fragment.createEl('details');
-        details.createEl('summary', { text: L({ ko: '캡처 실패 상세', en: 'Capture failure details' }) });
+        details.onclick = event => event.stopPropagation();
+        const summary = details.createEl('summary', { text: L({ ko: '캡처 실패 상세', en: 'Capture failure details' }) });
+        summary.onclick = event => event.stopPropagation();
         for (const failure of failures.slice(0, 10)) {
             const reason = failure.message === 'capture block limit reached'
                 ? L({ ko: `캡처 제한에 도달했습니다 (최대 ${this.settings.maxCaptureBlocks}개 블록)`, en: `capture limit reached (max ${this.settings.maxCaptureBlocks} blocks)` })
@@ -879,23 +881,29 @@ export default class HWPXExporterPlugin extends Plugin {
 
     private showConversionWarnings(report: ConversionReport, disabledLanguages: DisabledCapture[], captureFailures: CaptureFailure[]): void {
         if (report.warnings.length === 0) return;
-        const fragment = createFragment();
-        fragment.createEl('div', { text: L({ ko: `HWPX 변환 경고: ${summarizeReport(report)}.`, en: `HWPX conversion warnings: ${summarizeReport(report)}.` }) });
-        if (disabledLanguages.length) fragment.createEl('div', { text: summarizeDisabledCaptureLanguages(disabledLanguages) });
-        this.appendCaptureFailures(fragment, captureFailures);
-        fragment.createEl('div', { text: L({ ko: '자세한 내용은 개발자 콘솔에 있습니다.', en: 'More in the developer console' }) });
+        const warningEl = createDiv();
+        warningEl.createEl('div', { text: L({ ko: `HWPX 변환 경고: ${summarizeReport(report)}.`, en: `HWPX conversion warnings: ${summarizeReport(report)}.` }) });
+        if (disabledLanguages.length) warningEl.createEl('div', { text: summarizeDisabledCaptureLanguages(disabledLanguages) });
+        this.appendCaptureFailures(warningEl, captureFailures);
+        warningEl.createEl('div', { text: L({ ko: '자세한 내용은 개발자 콘솔에 있습니다.', en: 'More in the developer console' }) });
+        const wrap = (element: HTMLElement): DocumentFragment => {
+            const fragment = createFragment();
+            fragment.appendChild(element);
+            return fragment;
+        };
         const switches = [...new Set(disabledLanguages.flatMap(block => block.switches))].filter(key => !this.settings[key]);
         if (switches.length) {
-            const button = fragment.createEl('button', { text: L({ ko: '렌더 캡처 켜기', en: 'Turn on render capture' }) });
-            button.addEventListener('click', () => {
+            const button = warningEl.createEl('button', { text: L({ ko: '렌더 캡처 켜기', en: 'Turn on render capture' }) });
+            button.addEventListener('click', event => {
+                event.stopPropagation();
                 button.disabled = true;
-                const confirmation = createFragment();
-                confirmation.createEl('div', { text: L({ ko: '필요한 렌더 캡처 설정을 켜시겠습니까?', en: 'Turn on the required render capture settings?' }) });
-                if (switches.includes('captureThirdPartyRenderers')) confirmation.createEl('div', { text: L({ ko: '다른 플러그인의 코드 블록 렌더러를 실행합니다. 믿을 수 있는 노트에만 켜세요.', en: 'Runs code-block renderers from other plugins. Turn on only for notes you trust.' }) });
-                const confirm = confirmation.createEl('button', { text: L({ ko: '켜기', en: 'Turn on' }) });
-                const cancel = confirmation.createEl('button', { text: L({ ko: '취소', en: 'Cancel' }) });
-                cancel.addEventListener('click', () => { button.disabled = false; notice.setMessage(fragment); });
-                confirm.addEventListener('click', () => { confirm.disabled = true; cancel.disabled = true; void (async () => {
+                const confirmationEl = createDiv();
+                confirmationEl.createEl('div', { text: L({ ko: '필요한 렌더 캡처 설정을 켜시겠습니까?', en: 'Turn on the required render capture settings?' }) });
+                if (switches.includes('captureThirdPartyRenderers')) confirmationEl.createEl('div', { text: L({ ko: '다른 플러그인의 코드 블록 렌더러를 실행합니다. 믿을 수 있는 노트에만 켜세요.', en: 'Runs code-block renderers from other plugins. Turn on only for notes you trust.' }) });
+                const confirm = confirmationEl.createEl('button', { text: L({ ko: '켜기', en: 'Turn on' }) });
+                const cancel = confirmationEl.createEl('button', { text: L({ ko: '취소', en: 'Cancel' }) });
+                cancel.addEventListener('click', event => { event.stopPropagation(); button.disabled = false; notice.setMessage(wrap(warningEl)); });
+                confirm.addEventListener('click', event => { event.stopPropagation(); confirm.disabled = true; cancel.disabled = true; void (async () => {
                     for (const key of switches) this.settings[key] = true;
                     try {
                         await this.saveSettings();
@@ -904,14 +912,14 @@ export default class HWPXExporterPlugin extends Plugin {
                     } catch (error) {
                         for (const key of switches) this.settings[key] = false;
                         button.disabled = false;
-                        notice.setMessage(fragment);
+                        notice.setMessage(wrap(warningEl));
                         new Notice(L({ ko: `설정 저장 실패: ${toErrorMessage(error)}`, en: `Failed to save settings: ${toErrorMessage(error)}` }));
                     }
                 })(); });
-                notice.setMessage(confirmation);
+                notice.setMessage(wrap(confirmationEl));
             });
         }
-        const notice = new Notice(fragment, switches.length || captureFailures.length ? 0 : 10000);
+        const notice = new Notice(wrap(warningEl), switches.length || captureFailures.length ? 0 : 10000);
     }
 
     private async exportCurrentNote(): Promise<void> {
