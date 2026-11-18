@@ -31,7 +31,7 @@ import { convertString } from '../src/converterApi';
 import { ObservedBlockRecorder } from '../src/observedBlockIndex';
 import { ConversionConfig } from '../src/config';
 import { ConversionReportCollector, summarizeReport, type ConversionReport } from '../src/conversionReport';
-import { captureReport, disabledCaptureLanguages, summarizeDisabledCaptureLanguages } from './captureReport';
+import { captureReport, disabledCaptureLanguages, summarizeDisabledCaptureLanguages, type DisabledCapture, type CaptureFailure } from './captureReport';
 import { inspectTemplate, type TemplateInspection } from '../src/templateInspector';
 import { stripObsidianComments } from '../src/obsidianComments';
 import {
@@ -613,18 +613,19 @@ export default class HWPXExporterPlugin extends Plugin {
         file: TFile,
         templatePath: string | undefined,
         customOutputPath?: string
-    ): Promise<{ outputPath: string; report: ConversionReport; disabledLanguages: string[] }> {
+    ): Promise<{ outputPath: string; report: ConversionReport; disabledLanguages: DisabledCapture[]; captureFailures: CaptureFailure[] }> {
         if (templatePath === undefined) templatePath = (await loadNoteTemplate(this.templateLoaderHost(), file.path)).path;
         const outputVaultPath = customOutputPath ? normalizePath(customOutputPath) : this.buildOutputVaultPath(file);
         const outputAbsolutePath = path.join(this.getFileSystemAdapter().getBasePath(), outputVaultPath);
         fs.mkdirSync(path.dirname(outputAbsolutePath), { recursive: true });
-        let disabledLanguages: string[] = [];
-        const report = await this.convertNote(file, templatePath, outputAbsolutePath, undefined, languages => { disabledLanguages = languages; });
-        return { outputPath: outputVaultPath, report, disabledLanguages };
+        let disabledLanguages: DisabledCapture[] = [];
+        let captureFailures: CaptureFailure[] = [];
+        const report = await this.convertNote(file, templatePath, outputAbsolutePath, undefined, languages => { disabledLanguages = languages; }, failures => { captureFailures = failures; });
+        return { outputPath: outputVaultPath, report, disabledLanguages, captureFailures };
     }
 
     /** Render capture + conversion of one note into an absolute output path. */
-    private async convertNote(file: TFile, templatePath: string, outputAbsolutePath: string, frozen?: { signal?: AbortSignal; markdown: string; templateAbsolutePath: string; record(path: string, bytes: Uint8Array): void; selectionObserver?: ObservedBlockRecorder; splitRoleMarkerLines?: boolean }, onDisabledLanguages?: (languages: string[]) => void): Promise<ConversionReport> {
+    private async convertNote(file: TFile, templatePath: string, outputAbsolutePath: string, frozen?: { signal?: AbortSignal; markdown: string; templateAbsolutePath: string; record(path: string, bytes: Uint8Array): void; selectionObserver?: ObservedBlockRecorder; splitRoleMarkerLines?: boolean }, onDisabledLanguages?: (languages: DisabledCapture[]) => void, onCaptureFailures?: (failures: CaptureFailure[]) => void): Promise<ConversionReport> {
         const adapter = this.getFileSystemAdapter();
         const templateAbsolutePath = frozen?.templateAbsolutePath ?? this.resolveTemplateAbsolutePath(templatePath);
         if (!fs.existsSync(templateAbsolutePath)) {
@@ -666,13 +667,16 @@ export default class HWPXExporterPlugin extends Plugin {
             },
         });
         frozen?.signal?.throwIfAborted();
+        onCaptureFailures?.(capture.failures);
         if (capture.contractViolation) {
             new Notice(L({ ko: 'SVG 캡처 결과를 원문에 대응시키지 못해 원래 Markdown을 유지했습니다.', en: "The SVG capture could not be matched to the source. The original Markdown was kept." }), 8000);
         }
         if (capture.failures.length > 0) {
             const mermaidFailures = capture.failures.filter((failure) => failure.hint === 'mermaid').length;
             const label = mermaidFailures > 0 ? L({ ko: `Mermaid ${mermaidFailures}건`, en: `Mermaid ${mermaidFailures} item(s)` }) : L({ ko: `${capture.failures.length}건`, en: `${capture.failures.length} item(s)` });
-            new Notice(L({ ko: `${label} 캡처 실패; 원문을 유지했습니다. 콘솔을 확인하세요.`, en: `${label} capture failed; the source was kept. Check the console.` }), 8000);
+            const fragment = createFragment();
+            fragment.createEl('div', { text: L({ ko: `${label} 캡처 실패; 원문을 유지했습니다. 자세한 내용은 개발자 콘솔에 있습니다.`, en: `${label} capture failed; the source was kept. More in the developer console.` }) });
+            new Notice(fragment, 8000);
         }
         const markdown = rewriteObsidianImageEmbeds(capture.markdown);
         const inputAbsolutePath = path.join(adapter.getBasePath(), file.path);
@@ -830,9 +834,10 @@ export default class HWPXExporterPlugin extends Plugin {
 
         let outputPath: string;
         let report: ConversionReport;
-        let disabledLanguages: string[];
+        let disabledLanguages: DisabledCapture[];
+        let captureFailures: CaptureFailure[];
         try {
-            ({ outputPath, report, disabledLanguages } = await this.exportSingleFile(file, templatePath));
+            ({ outputPath, report, disabledLanguages, captureFailures } = await this.exportSingleFile(file, templatePath));
         } catch (error) {
             console.error('[HWPX Exporter] Export failed', error);
             startNotice.hide();
@@ -844,7 +849,7 @@ export default class HWPXExporterPlugin extends Plugin {
             const openedWith = await this.openExportedFile(outputPath);
             startNotice.hide();
             new Notice(L({ ko: `HWPX로 내보내고 ${openedWith}에서 열었습니다: ${outputPath}`, en: `Exported to HWPX and opened in ${openedWith}: ${outputPath}` }), 6000);
-            this.showConversionWarnings(report, disabledLanguages);
+            this.showConversionWarnings(report, disabledLanguages, captureFailures);
         } catch (error) {
             console.error('[HWPX Exporter] Opening exported file failed', error);
             startNotice.hide();
@@ -852,39 +857,61 @@ export default class HWPXExporterPlugin extends Plugin {
                 L({ ko: `HWPX로 내보냈지만 파일을 열지 못했습니다: ${outputPath}. ${toErrorMessage(error)}`, en: `Exported to HWPX but could not open the file: ${outputPath}. ${toErrorMessage(error)}` }),
                 10000
             );
-            this.showConversionWarnings(report, disabledLanguages);
+            this.showConversionWarnings(report, disabledLanguages, captureFailures);
         }
     }
 
     /** Tell the user what the converter could not express as written (details go to the console). */
-    private showConversionWarnings(report: ConversionReport, disabledLanguages: string[]): void {
-        if (report.warnings.length === 0) return;
-        if (disabledLanguages.length > 0) {
-            const fragment = createFragment();
-            fragment.createEl('div', { text: L({ ko: `HWPX 변환 경고: ${summarizeReport(report)}.`, en: `HWPX conversion warnings: ${summarizeReport(report)}.` }) });
-            fragment.createEl('div', { text: summarizeDisabledCaptureLanguages(disabledLanguages) });
-            if (!this.settings.captureThirdPartyRenderers) {
-                const button = fragment.createEl('button', { text: L({ ko: '렌더 캡처 켜기', en: 'Turn on render capture' }) });
-                button.addEventListener('click', () => {
-                    button.disabled = true;
-                    void (async () => {
-                        this.settings.captureThirdPartyRenderers = true;
-                        try {
-                            await this.saveSettings();
-                            notice.hide();
-                            new Notice(L({ ko: '렌더 캡처를 켰습니다. 다시 내보내면 그림이 포함됩니다.', en: 'Render capture is on. Export again to include the images.' }));
-                        } catch (error) {
-                            this.settings.captureThirdPartyRenderers = false;
-                            button.disabled = false;
-                            new Notice(L({ ko: `설정 저장 실패: ${toErrorMessage(error)}`, en: `Failed to save settings: ${toErrorMessage(error)}` }));
-                        }
-                    })();
-                });
-            }
-            const notice = new Notice(fragment, this.settings.captureThirdPartyRenderers ? 10000 : 0);
-            return;
+    private appendCaptureFailures(fragment: DocumentFragment, failures: CaptureFailure[]): void {
+        if (!failures.length) return;
+        const details = fragment.createEl('details');
+        details.createEl('summary', { text: L({ ko: '캡처 실패 상세', en: 'Capture failure details' }) });
+        for (const failure of failures.slice(0, 10)) {
+            const reason = failure.message === 'capture block limit reached'
+                ? L({ ko: `캡처 제한에 도달했습니다 (최대 ${this.settings.maxCaptureBlocks}개 블록)`, en: `capture limit reached (max ${this.settings.maxCaptureBlocks} blocks)` })
+                : failure.message === 'capture total timeout reached'
+                    ? L({ ko: '전체 캡처 시간 제한에 도달했습니다', en: 'total capture time limit reached' })
+                    : failure.message.replace(/[\r\n]+/g, ' ').slice(0, 120);
+            details.createEl('div', { text: `${failure.hint} · ${reason}` });
         }
-        new Notice(L({ ko: `HWPX 변환 경고: ${summarizeReport(report)}. 자세한 내용은 개발자 콘솔을 보세요.`, en: `HWPX conversion warnings: ${summarizeReport(report)}. See the developer console for details.` }), 10000);
+        if (failures.length > 10) details.createEl('div', { text: L({ ko: `외 ${failures.length - 10}건`, en: `+${failures.length - 10} more` }) });
+    }
+
+    private showConversionWarnings(report: ConversionReport, disabledLanguages: DisabledCapture[], captureFailures: CaptureFailure[]): void {
+        if (report.warnings.length === 0) return;
+        const fragment = createFragment();
+        fragment.createEl('div', { text: L({ ko: `HWPX 변환 경고: ${summarizeReport(report)}.`, en: `HWPX conversion warnings: ${summarizeReport(report)}.` }) });
+        if (disabledLanguages.length) fragment.createEl('div', { text: summarizeDisabledCaptureLanguages(disabledLanguages) });
+        this.appendCaptureFailures(fragment, captureFailures);
+        fragment.createEl('div', { text: L({ ko: '자세한 내용은 개발자 콘솔에 있습니다.', en: 'More in the developer console' }) });
+        const switches = [...new Set(disabledLanguages.flatMap(block => block.switches))].filter(key => !this.settings[key]);
+        if (switches.length) {
+            const button = fragment.createEl('button', { text: L({ ko: '렌더 캡처 켜기', en: 'Turn on render capture' }) });
+            button.addEventListener('click', () => {
+                button.disabled = true;
+                const confirmation = createFragment();
+                confirmation.createEl('div', { text: L({ ko: '필요한 렌더 캡처 설정을 켜시겠습니까?', en: 'Turn on the required render capture settings?' }) });
+                if (switches.includes('captureThirdPartyRenderers')) confirmation.createEl('div', { text: L({ ko: '다른 플러그인의 코드 블록 렌더러를 실행합니다. 믿을 수 있는 노트에만 켜세요.', en: 'Runs code-block renderers from other plugins. Turn on only for notes you trust.' }) });
+                const confirm = confirmation.createEl('button', { text: L({ ko: '켜기', en: 'Turn on' }) });
+                const cancel = confirmation.createEl('button', { text: L({ ko: '취소', en: 'Cancel' }) });
+                cancel.addEventListener('click', () => { button.disabled = false; notice.setMessage(fragment); });
+                confirm.addEventListener('click', () => { confirm.disabled = true; cancel.disabled = true; void (async () => {
+                    for (const key of switches) this.settings[key] = true;
+                    try {
+                        await this.saveSettings();
+                        notice.hide();
+                        new Notice(L({ ko: '렌더 캡처를 켰습니다. 다시 내보내면 그림이 포함됩니다.', en: 'Render capture is on. Export again to include the images.' }));
+                    } catch (error) {
+                        for (const key of switches) this.settings[key] = false;
+                        button.disabled = false;
+                        notice.setMessage(fragment);
+                        new Notice(L({ ko: `설정 저장 실패: ${toErrorMessage(error)}`, en: `Failed to save settings: ${toErrorMessage(error)}` }));
+                    }
+                })(); });
+                notice.setMessage(confirmation);
+            });
+        }
+        const notice = new Notice(fragment, switches.length || captureFailures.length ? 0 : 10000);
     }
 
     private async exportCurrentNote(): Promise<void> {
@@ -940,15 +967,17 @@ export default class HWPXExporterPlugin extends Plugin {
         const failures: string[] = [];
         let filesWithWarnings = 0;
         const batchWarnings = new ConversionReportCollector();
-        const disabledLanguages: string[] = [];
+        const disabledLanguages: DisabledCapture[] = [];
+        const captureFailures: CaptureFailure[] = [];
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             startNotice.setMessage(L({ ko: `HWPX 내보내기 진행 중입니다: ${i + 1}/${files.length} · ${file.basename}`, en: `Exporting to HWPX: ${i + 1}/${files.length} · ${file.basename}` }));
             try {
-                const { report, disabledLanguages: fileDisabledLanguages } = await this.exportSingleFile(file, templatePath);
+                const { report, disabledLanguages: fileDisabledLanguages, captureFailures: fileCaptureFailures } = await this.exportSingleFile(file, templatePath);
                 batchWarnings.merge(report);
                 disabledLanguages.push(...fileDisabledLanguages);
+                captureFailures.push(...fileCaptureFailures);
                 successCount += 1;
                 if (report.warnings.length > 0) filesWithWarnings += 1;
             } catch (error) {
@@ -959,7 +988,7 @@ export default class HWPXExporterPlugin extends Plugin {
         }
 
         startNotice.hide();
-        if (disabledLanguages.length > 0) this.showConversionWarnings(batchWarnings.toJSON(), disabledLanguages);
+        if (batchWarnings.toJSON().warnings.length > 0) this.showConversionWarnings(batchWarnings.toJSON(), disabledLanguages, captureFailures);
 
         const warningNote = filesWithWarnings > 0
             ? L({ ko: ` 변환 경고가 있는 파일 ${filesWithWarnings}개(개발자 콘솔 참고).`, en: ` Files with conversion warnings: ${filesWithWarnings} (see the developer console).` })

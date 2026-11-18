@@ -44,4 +44,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release upload "$RELEASE_TAG" main.js manifest.json styles.css --clobber 2>/dev/null || gh release create "$RELEASE_TAG" main.js manifest.json styles.css --draft --verify-tag --title "$RELEASE_TAG" --generate-notes
+          notes="release-notes/$RELEASE_TAG.md"
+          if [ -f "$notes" ]; then note_args=(--notes-file "$notes"); else note_args=(--generate-notes); fi
+          gh release upload "$RELEASE_TAG" main.js manifest.json styles.css --clobber 2>/dev/null || gh release create "$RELEASE_TAG" main.js manifest.json styles.css --draft --verify-tag --title "$RELEASE_TAG" "${note_args[@]}"

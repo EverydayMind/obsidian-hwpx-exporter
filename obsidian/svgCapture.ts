@@ -5,6 +5,7 @@ import { readImagePixelSize } from '../src/imageDimensions';
 import { prepareMermaidSource, prepareRenderSource } from './renderSource';
 import type { LayerBox, LayerCandidate } from './captureLayers';
 import { isTransparentColor, selectLayerStack } from './captureLayers';
+import { captureLanguages } from './captureSelection';
 
 export interface SvgBinaryAsset {
     vaultPath: string;
@@ -81,13 +82,7 @@ export async function captureRenderableBlocks(
         return { markdown, assets: new Map(), inserted: [], failures: [], contractViolation: false };
     }
 
-    const languages = new Set<string>();
-    if (options.captureMermaid) languages.add('mermaid');
-    if (options.captureThirdPartyRenderers) {
-        for (const language of options.thirdPartyLanguages) {
-            if (language.trim()) languages.add(language.trim().toLowerCase());
-        }
-    }
+    const languages = captureLanguages(options);
 
     const blocks = scanRenderableBlocks(markdown, {
         languages,
