@@ -248,7 +248,7 @@ return [
             required: ['path'],
             properties: {
                 path: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: '점검할 Markdown 노트의 Vault 기준 상대 경로.', en: "Vault-relative path of the Markdown note to check." }) },
-                template: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: 'get_export_options가 준 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 템플릿으로 시험한다.', en: "One of the template paths returned by get_export_options. If omitted, tests with the note's hwpx-template, or the first listed template when none is declared." }) },
+                template: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: 'get_export_options가 준 템플릿 경로 또는 목록에서 유일한 파일 이름. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 템플릿으로 시험한다.', en: "A template path returned by get_export_options, or a file name unique in the list. If omitted, tests with the note's hwpx-template, or the first listed template when none is declared." }) },
             },
         },
         annotations: { readOnlyHint: true },
@@ -264,7 +264,7 @@ return [
             required: ['path'],
             properties: {
                 path: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: '내보낼 Markdown 노트의 Vault 기준 상대 경로 (예: "노트.md", "100.내용/보고서.md").', en: "Vault-relative path of the Markdown note to export (e.g. \"Note.md\", \"100.Content/Report.md\")." }) },
-                template: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: 'get_export_options로 확인한 템플릿 경로 중 하나. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 번째 템플릿을 사용한다.', en: "One of the template paths obtained from get_export_options. If omitted, uses the note's hwpx-template, or the first listed template when none is declared." }) },
+                template: { type: 'string', minLength: 1, maxLength: 4096, description: L({ ko: 'get_export_options로 확인한 템플릿 경로 또는 목록에서 유일한 파일 이름. 생략하면 노트의 hwpx-template, 없으면 목록의 첫 번째 템플릿을 사용한다.', en: "A template path obtained from get_export_options, or a file name unique in the list. If omitted, uses the note's hwpx-template, or the first listed template when none is declared." }) },
                 expected_note_sha256: { type: 'string', minLength: 64, maxLength: 64 },
                 expected_template_sha256: { type: 'string', minLength: 64, maxLength: 64 },
                 derive_from: deriveBundleInputSchema,
@@ -532,7 +532,7 @@ export function createAgentProvider(host: ExportProviderHost, locale: Locale = g
                 inputDependencies.push(...(rendered.inputDependencies ?? [])); providerInternalWrites = rendered.providerInternalWrites ?? [];
             }
             const templateWarnings = request.tool === 'export_note'
-                ? await templateOverrideWarnings(host, notePath, request.args.template, ctx.signal) : [];
+                ? await templateOverrideWarnings(host, notePath, request.args.template === undefined ? undefined : template, ctx.signal) : [];
             if (!await dependenciesCurrent(host, inputDependencies)) throw new ToolError('SOURCE_CHANGED', 'Input changed during preparation.');
             if (ctx.signal?.aborted) throw new ToolError('CANCELLED', L({ ko: '저장 준비가 취소됐다.', en: "Save preparation was cancelled." }));
             const owner = ownerOf(ctx.caller);
@@ -799,7 +799,7 @@ export function createAgentProvider(host: ExportProviderHost, locale: Locale = g
             if (!note) throw new ToolError('NOT_FOUND', L({ ko: `Vault에 이 노트가 없다: ${notePath}`, en: `Note not found in the Vault: ${notePath}` }), true);
             const loadedTemplate = await trialTemplate(host, notePath, args.template, signal);
             const template = loadedTemplate.path, templates = host.templates();
-            const templateWarnings = await templateOverrideWarnings(host, notePath, args.template, signal);
+            const templateWarnings = await templateOverrideWarnings(host, notePath, args.template === undefined ? undefined : template, signal);
 
             const options = host.options();
             const staticCount = scanRenderableBlocks(stripObsidianComments(note.markdown), { languages: ['chart-hands-static'], includeSvgFiles: false }).length;
@@ -898,6 +898,7 @@ export function createAgentProvider(host: ExportProviderHost, locale: Locale = g
                     : []),
             ];
             const lines = [
+                L({ ko: '점검만 했습니다. 파일은 아직 만들지 않았습니다. 만들려면 export_note를 호출하세요.', en: 'This was only a check. No file has been created yet. Call export_note to create it.' }),
                 L({ ko: `노트 ${notePath} → 내보내면 ${outputPath} (템플릿 ${template}${loadedTemplate.source === 'default' && templates.length > 1 ? `, 템플릿 ${templates.length}개 중 첫 번째로 시험` : ''})`, en: `Note ${notePath} → export to ${outputPath} (template ${template}${loadedTemplate.source === 'default' && templates.length > 1 ? `, templates: ${templates.length}; testing with the first` : ''})` }),
                 failure
                     ? L({ ko: `변환 시험: 실패 — ${failure}`, en: `Trial conversion: failed — ${failure}` })

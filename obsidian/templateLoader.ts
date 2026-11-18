@@ -50,9 +50,18 @@ export async function resolveNoteTemplate(
     signal?.throwIfAborted();
     let chosen: string, source: LoadedTemplate['source'];
     if (explicit !== undefined) {
-        if (typeof explicit !== 'string' || !host.templates().includes(explicit))
-            throw new DeriveProviderError('INVALID_ARGUMENT', 'template must be in the configured template list.');
-        chosen = explicit;
+        const templates = host.templates();
+        const filename = (p: string) => p.split('/').pop()!.normalize('NFC').toLowerCase();
+        const matches = typeof explicit === 'string' ? templates.filter((p) => filename(p) === filename(explicit)) : [];
+        if (typeof explicit === 'string' && templates.includes(explicit)) chosen = explicit;
+        else if (matches.length === 1) chosen = matches[0];
+        else {
+            const candidates = matches.length ? matches : templates;
+            throw new DeriveProviderError('INVALID_ARGUMENT', L({
+                ko: `template이 설정된 목록에 없거나 파일 이름이 모호합니다. template에 다음 경로 중 하나를 정확히 지정하세요: ${JSON.stringify(candidates)}`,
+                en: `template is not in the configured list or its file name is ambiguous. Set template to one of these exact paths: ${JSON.stringify(candidates)}`,
+            }));
+        }
         source = 'explicit';
     } else {
         const note = await host.readNote(notePath);
@@ -150,10 +159,11 @@ export async function templateOverrideWarnings(
     if (typeof explicit !== 'string') return [];
     try {
         const declared = await resolveNoteTemplate(host, notePath, undefined, signal);
-        if (declared.source !== 'frontmatter' || declared.path === explicit) return [];
+        const resolved = await resolveNoteTemplate(host, notePath, explicit, signal);
+        if (declared.source !== 'frontmatter' || declared.path === resolved.path) return [];
         return [{
             code: 'template_overrides_frontmatter',
-            message: L({ ko: '노트의 hwpx-template(', en: "Instead of the note's hwpx-template (" }) + declared.path + L({ ko: ') 대신 지정한 템플릿(', en: ") the specified template (" }) + explicit + L({ ko: ')으로 만든다. 노트가 선언한 서식을 쓰려면 template을 생략한다.', en: ") will be used. Omit template to use the formatting declared by the note." }),
+            message: L({ ko: '노트의 hwpx-template(', en: "Instead of the note's hwpx-template (" }) + declared.path + L({ ko: ') 대신 지정한 템플릿(', en: ") the specified template (" }) + resolved.path + L({ ko: ')으로 만든다. 노트가 선언한 서식을 쓰려면 template을 생략한다.', en: ") will be used. Omit template to use the formatting declared by the note." }),
             count: 1, examples: [],
         }];
     } catch {
