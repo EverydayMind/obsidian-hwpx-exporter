@@ -10,8 +10,11 @@ import { frozenPreflight } from './frozenPreflight';
 import { PREFLIGHT_MAX_FILE_BYTES, readBoundedPreflightInput } from './preflightTemplate';
 import {
     App,
+    type Editor,
     FileView,
     FuzzySuggestModal,
+    type MarkdownFileInfo,
+    type MarkdownView,
     Menu,
     Modal,
     Notice,
@@ -55,6 +58,10 @@ import { storedCandidates, storedPath } from '../src/storedFormats';
 const DEFAULT_TEMPLATE_FOLDER = 'HWPX templates';
 // When this plugin is enabled, a single-note export opens in its editor instead of the OS default app.
 const HWP_HANDS_PLUGIN_ID = 'hwp-hands';
+
+function exportWithTemplateMenuTitle(): string {
+    return L({ ko: 'HWPX Exporter: 템플릿으로 내보내기', en: 'HWPX Exporter: Export with template' });
+}
 
 function installBundledTemplatesCommandName(): string {
     return L({ ko: '동봉 템플릿 설치', en: 'Install bundled templates' });
@@ -324,7 +331,7 @@ export default class HWPXExporterPlugin extends Plugin {
             this.app.workspace.on('file-menu', (menu: Menu, file: TAbstractFile) => {
                 if (file instanceof TFile && file.extension.toLowerCase() === 'md') {
                     menu.addItem((item) => {
-                        item.setTitle(L({ ko: 'HWPX로 내보내기 (템플릿 적용)', en: 'Export to HWPX (with template)' }))
+                        item.setTitle(exportWithTemplateMenuTitle())
                             .setIcon('file-output')
                             .onClick(() => void this.exportFileAfterTemplatePrompt(file));
                     });
@@ -332,11 +339,23 @@ export default class HWPXExporterPlugin extends Plugin {
 
                 if (file instanceof TFolder) {
                     menu.addItem((item) => {
-                        item.setTitle(L({ ko: '폴더를 HWPX로 내보내기 (템플릿 적용)', en: 'Export folder to HWPX (with template)' }))
+                        item.setTitle(L({ ko: 'HWPX Exporter: 폴더를 템플릿으로 내보내기', en: 'HWPX Exporter: Export folder with template' }))
                             .setIcon('folder-output')
                             .onClick(() => void this.exportFolderAfterTemplatePrompt(file));
                     });
                 }
+            })
+        );
+
+        this.registerEvent(
+            this.app.workspace.on('editor-menu', (menu: Menu, _editor: Editor, view: MarkdownView | MarkdownFileInfo) => {
+                const file = view.file;
+                if (!(file instanceof TFile) || file.extension.toLowerCase() !== 'md') return;
+                menu.addItem((item) => {
+                    item.setTitle(exportWithTemplateMenuTitle())
+                        .setIcon('file-output')
+                        .onClick(() => void this.exportFileAfterTemplatePrompt(file));
+                });
             })
         );
 
@@ -688,7 +707,7 @@ export default class HWPXExporterPlugin extends Plugin {
             const mermaidFailures = capture.failures.filter((failure) => failure.hint === 'mermaid').length;
             const label = mermaidFailures > 0 ? L({ ko: `Mermaid ${mermaidFailures}건`, en: `Mermaid ${mermaidFailures} item(s)` }) : L({ ko: `${capture.failures.length}건`, en: `${capture.failures.length} item(s)` });
             const fragment = createFragment();
-            fragment.createEl('div', { text: L({ ko: `${label} 캡처 실패; 원문을 유지했습니다. 자세한 내용은 개발자 콘솔에 있습니다.`, en: `${label} capture failed; the source was kept. More in the developer console.` }) });
+            fragment.createEl('div', { text: L({ ko: `${label} 캡처 실패; 원문을 유지했습니다.`, en: `${label} capture failed; the source was kept.` }) });
             new Notice(fragment, 8000);
         }
         const markdown = rewriteObsidianImageEmbeds(capture.markdown);
@@ -840,7 +859,7 @@ export default class HWPXExporterPlugin extends Plugin {
         }
     }
 
-    private async exportFileWithNotice(file: TFile, templatePath: string): Promise<void> {
+    private async exportFileWithNotice(file: TFile, templatePath: string, customOutputPath?: string): Promise<void> {
         // duration=0 keeps the notice on screen until we hide() it ourselves,
         // right before the completion/failure notice replaces it.
         const startNotice = new Notice(L({ ko: `HWPX 내보내기 진행 중입니다: ${file.basename}`, en: `Exporting to HWPX: ${file.basename}` }), 0);
@@ -850,7 +869,7 @@ export default class HWPXExporterPlugin extends Plugin {
         let disabledLanguages: DisabledCapture[];
         let captureFailures: CaptureFailure[];
         try {
-            ({ outputPath, report, disabledLanguages, captureFailures } = await this.exportSingleFile(file, templatePath));
+            ({ outputPath, report, disabledLanguages, captureFailures } = await this.exportSingleFile(file, templatePath, customOutputPath));
         } catch (error) {
             console.error('[HWPX Exporter] Export failed', error);
             startNotice.hide();
@@ -862,7 +881,7 @@ export default class HWPXExporterPlugin extends Plugin {
             const openedWith = await this.openExportedFile(outputPath);
             startNotice.hide();
             new Notice(L({ ko: `HWPX로 내보내고 ${openedWith}에서 열었습니다: ${outputPath}`, en: `Exported to HWPX and opened in ${openedWith}: ${outputPath}` }), 6000);
-            this.showConversionWarnings(report, disabledLanguages, captureFailures);
+            this.showConversionWarnings(report, disabledLanguages, captureFailures, { file, templatePath, outputPath });
         } catch (error) {
             console.error('[HWPX Exporter] Opening exported file failed', error);
             startNotice.hide();
@@ -870,7 +889,7 @@ export default class HWPXExporterPlugin extends Plugin {
                 L({ ko: `HWPX로 내보냈지만 파일을 열지 못했습니다: ${outputPath}. ${toErrorMessage(error)}`, en: `Exported to HWPX but could not open the file: ${outputPath}. ${toErrorMessage(error)}` }),
                 10000
             );
-            this.showConversionWarnings(report, disabledLanguages, captureFailures);
+            this.showConversionWarnings(report, disabledLanguages, captureFailures, { file, templatePath, outputPath });
         }
     }
 
@@ -892,13 +911,12 @@ export default class HWPXExporterPlugin extends Plugin {
         if (failures.length > 10) details.createEl('div', { text: L({ ko: `외 ${failures.length - 10}건`, en: `+${failures.length - 10} more` }) });
     }
 
-    private showConversionWarnings(report: ConversionReport, disabledLanguages: DisabledCapture[], captureFailures: CaptureFailure[]): void {
+    private showConversionWarnings(report: ConversionReport, disabledLanguages: DisabledCapture[], captureFailures: CaptureFailure[], reexport?: { file: TFile; templatePath: string; outputPath: string }): void {
         if (report.warnings.length === 0) return;
         const warningEl = createDiv();
         warningEl.createEl('div', { text: L({ ko: `HWPX 변환 경고: ${summarizeReport(report)}.`, en: `HWPX conversion warnings: ${summarizeReport(report)}.` }) });
         if (disabledLanguages.length) warningEl.createEl('div', { text: summarizeDisabledCaptureLanguages(disabledLanguages) });
         this.appendCaptureFailures(warningEl, captureFailures);
-        warningEl.createEl('div', { text: L({ ko: '자세한 내용은 개발자 콘솔에 있습니다.', en: 'More in the developer console' }) });
         const wrap = (element: HTMLElement): DocumentFragment => {
             const fragment = createFragment();
             fragment.appendChild(element);
@@ -921,7 +939,18 @@ export default class HWPXExporterPlugin extends Plugin {
                     try {
                         await this.saveSettings();
                         notice.hide();
-                        new Notice(L({ ko: '렌더 캡처를 켰습니다. 다시 내보내면 그림이 포함됩니다.', en: 'Render capture is on. Export again to include the images.' }));
+                        const message = L({ ko: '렌더 캡처를 켰습니다. 다시 내보내면 그림이 포함됩니다.', en: 'Render capture is on. Export again to include the images.' });
+                        if (!reexport) { new Notice(message); return; }
+                        const doneEl = createDiv();
+                        doneEl.createEl('div', { text: message });
+                        const again = doneEl.createEl('button', { text: L({ ko: '지금 다시 내보내기', en: 'Export again now' }) });
+                        again.addEventListener('click', event => {
+                            event.stopPropagation();
+                            again.disabled = true;
+                            doneNotice.hide();
+                            void this.exportFileWithNotice(reexport.file, reexport.templatePath, reexport.outputPath);
+                        });
+                        const doneNotice = new Notice(wrap(doneEl), 15000);
                     } catch (error) {
                         for (const key of switches) this.settings[key] = false;
                         button.disabled = false;
@@ -1012,7 +1041,7 @@ export default class HWPXExporterPlugin extends Plugin {
         if (batchWarnings.toJSON().warnings.length > 0) this.showConversionWarnings(batchWarnings.toJSON(), disabledLanguages, captureFailures);
 
         const warningNote = filesWithWarnings > 0
-            ? L({ ko: ` 변환 경고가 있는 파일 ${filesWithWarnings}개(개발자 콘솔 참고).`, en: ` Files with conversion warnings: ${filesWithWarnings} (see the developer console).` })
+            ? L({ ko: ` 변환 경고가 있는 파일 ${filesWithWarnings}개.`, en: ` Files with conversion warnings: ${filesWithWarnings}.` })
             : '';
         if (failures.length === 0) {
             new Notice(L({ ko: `HWPX 내보내기 완료: ${files.length}개 중 ${successCount}개 성공.${warningNote}`, en: `HWPX export complete: ${files.length} total, ${successCount} succeeded.${warningNote}` }), warningNote ? 8000 : 5000);
