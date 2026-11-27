@@ -1,4 +1,6 @@
 import { getLocale, localizer, type Locale } from '../src/locale';
+import type { AssetsDescriptor, ReadAssetResult } from '../contracts/agentinterop/host-capabilities-v1/protocol';
+import { describeAgentAssets, readAgentAsset } from './agentSkills';
 import { inspectDecompositionTemplate } from './decompositionInspection';
 import { RetiredRecordError } from '../src/template-derive/decompositionRecord';
 import { DialectError } from '../src/template-derive/templateMetadata';
@@ -55,6 +57,9 @@ export interface AgentCapabilityProvider {
     readonly protocol: 'agentinterop';
     readonly protocolVersion: 1;
     describe(): Promise<JsonObject>;
+    /** Host-only (host-capabilities-v1); never part of describe(). */
+    describeAssets(): AssetsDescriptor;
+    readAsset(request: unknown): ReadAssetResult;
     callTool(name: string, args: JsonObject, ctx?: { signal?: AbortSignal }): Promise<AgentToolResult>;
     /** Fixes the file a commit tool would create, without changing anything. */
     resolveTarget(name: string, args: JsonObject, ctx?: CommitContext): Promise<ExportTarget>;
@@ -939,6 +944,14 @@ export function createAgentProvider(host: ExportProviderHost, locale: Locale = g
         protocolVersion: 1,
         async describe() {
             return descriptor;
+        },
+        describeAssets() {
+            if (disposed) throw new ToolError('DISPOSED', L({ ko: '플러그인이 종료됐다.', en: "The plugin has been disposed." }));
+            return describeAgentAssets();
+        },
+        readAsset(request: unknown) {
+            if (disposed) throw new ToolError('DISPOSED', L({ ko: '플러그인이 종료됐다.', en: "The plugin has been disposed." }));
+            return readAgentAsset(request);
         },
         resolveTarget,
         commit,

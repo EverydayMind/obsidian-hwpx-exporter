@@ -1,0 +1,120 @@
+{
+  "generator": "verbex-plugin-skills@1",
+  "pluginId": "md-to-hwpx",
+  "assets": {
+    "version": 1,
+    "skills": [
+      {
+        "id": "hwp-format-reuse",
+        "locale": "ko",
+        "frontmatter": {
+          "name": "한글 서식 재사용 작업",
+          "description": "샘플 한글 문서를 텍스트 MD와 템플릿 HWPX로 분해하고 그 서식과 문체로 새 문서를 작성합니다.",
+          "trigger_keywords": [
+            "같은 한글 양식",
+            "샘플 보고서 양식",
+            "보고서 양식 재사용",
+            "한글 서식 재사용",
+            "보고서 스타일 복제",
+            "동일한 문체와 형식",
+            "같은 한글 형식",
+            "서식과 문체",
+            "문체 등을 그대로",
+            "서식·문체",
+            "문체와 서식",
+            "샘플 hwpx",
+            "샘플로 주어진 hwpx",
+            "샘플 한글 문서의 양식",
+            "서식이나 문체",
+            "문체나 서식",
+            "서식을 측정",
+            "서식 측정",
+            "양식을 측정",
+            "서식에 맞춰 작성",
+            "양식에 맞춰 작성",
+            "hwpx|hwp|한글 파일|한글 문서 & 서식|양식|문체 & 참고|따라|처럼|본떠|본따 & !수치만|내용만|자료만|데이터만|숫자만|서식은 자유|양식은 자유|형식은 자유",
+            "hwpx|hwp & 참고|따라|처럼|본떠|본따 & 한글 보고서|한글 파일|한글 문서|한글로 & !수치만|내용만|자료만|데이터만|숫자만|서식은 자유|양식은 자유|형식은 자유",
+            "샘플|양식|서식|템플릿 & 분해",
+            "샘플|견본 & 양식|서식 & 그대로 & !채워|채우|빈칸|수치만|내용만|자료만|데이터만|숫자만|서식은 자유|양식은 자유|형식은 자유"
+          ],
+          "applies_to": [
+            "*.md",
+            "*.hwp",
+            "*.hwpx"
+          ],
+          "tools": [
+            "prepare_format_reuse",
+            "save_format_decomposition",
+            "produce_format_reuse",
+            "write_file",
+            "search_vault",
+            "read_note_section"
+          ],
+          "requires-host-tools": [
+            "prepare_format_reuse",
+            "save_format_decomposition",
+            "produce_format_reuse"
+          ],
+          "required-plugins": [
+            "md-to-hwpx"
+          ],
+          "standalone": true,
+          "cross_document": true
+        },
+        "bodySha256": "1cf7c06fac036a5b418227e3b1095c3f716abdd6a7ba387a6c4ff759fdab1a2c",
+        "bodyTokens": 945
+      },
+      {
+        "id": "hwpx-document-creation",
+        "locale": "ko",
+        "frontmatter": {
+          "name": "아래아한글 문서 작성",
+          "description": "새 HWPX 생성 또는 Markdown 노트의 HWPX 내보내기를 진행합니다. 기존 한글 문서 수정에는 도구 선택 지침을 따릅니다.",
+          "trigger_keywords": [
+            "새 한글 문서",
+            "새 hwp",
+            "새 hwpx",
+            "hwpx 내보내기",
+            "hwpx내보내기",
+            "한글 문서 생성",
+            "한글 문서로 변환",
+            "hwpx로 변환",
+            "HWPX 보고서를 새로",
+            "아래아 한글 파일",
+            "한글 파일까지 작성"
+          ],
+          "applies_to": [
+            "markdown"
+          ],
+          "allowed-tools": [
+            "write_file",
+            "read_file",
+            "plg__md-to-hwpx__get_export_options",
+            "plg__md-to-hwpx__check_export",
+            "plg__md-to-hwpx__export_note",
+            "plg__chart-hands__build_chart",
+            "prepare_format_reuse",
+            "produce_format_reuse"
+          ],
+          "requires-host-tools": [
+            "prepare_format_reuse",
+            "produce_format_reuse"
+          ],
+          "required-plugins": [
+            "md-to-hwpx"
+          ]
+        },
+        "bodySha256": "c2bac760773c93f6a4782d97e45d674a26f408a22bb813a54fb1f600aafc9892",
+        "bodyTokens": 1903
+      }
+    ]
+  },
+  "bodies": {
+    "hwp-format-reuse/ko": "1. 호스트가 준비한 document_jobs 결과를 먼저 확인합니다. 없으면 샘플 또는 분해본 경로로 prepare_format_reuse를 호출합니다. 샘플은 서식 근거이며 열린 원본을 편집하지 않습니다.\n2. decomposition.fitness가 B이면 differences의 넘어오지 않는 부분을 사용자에게 알립니다. C이면 등급의 뜻과 reasons를 설명하고 사본 편집 / 그래도 분해 중 선택을 묻습니다. 사용자가 이미 분해를 명시했다면 호스트의 nextStep을 따릅니다. editPath가 unavailable이면 한글에서 원본 사본을 열어 직접 고치도록 안내합니다.\n3. decomposition.state가 pending_save이면 nextStep대로 save_format_decomposition을 호출합니다. 분해만 요청했다면 저장 결과까지만 보고하고 초안을 쓰지 않습니다. 분해본 저장과 새 문서 생성은 구분합니다.\n4. roles의 앞 글자 대응과 reference_excerpt를 따르고 기호 글자를 쓰지 않습니다. ready이면 주제의 근거를 조사하고 draft_contract.reference_text_path의 분해본 MD를 읽어 구조·문법·문체를 참고합니다. draft_contract의 frontmatter와 문법에 맞춰 새 내용을 작성하고 write_file로 nextStep.arguments.draft_path에 저장합니다. 샘플 고유 문구·사실·수치를 새 사실로 옮기지 않습니다. 참고 MD가 없으면 호스트가 준 draft_contract를 따릅니다. v2(`hwpx-exporter-md/2`)는 위계를 제목 단계로 쓰고 역할은 바로 앞에 `<!--hwpx:역할-->`으로 씁니다. 불릿·번호 글자는 쓰지 않습니다. 6단계보다 깊으면 역할 지시 뒤 일반 문단으로 씁니다.\n5. 초안 저장 후 nextStep.arguments로 produce_format_reuse를 호출합니다. 사용자가 새 문서의 이름을 정했으면 draft_path·output_path의 파일 이름만 그 이름으로 바꿉니다(폴더·확장자·job_id는 그대로). 일반 내보내기나 원본 편집으로 대신하지 않습니다. 필요한 근거를 조사할 때마다 선택지를 제시하며 멈추지 않습니다.\n6. awaiting_choice이면 호스트가 제시한 실제 선택지만 묻고 직전 job_id와 선택으로 준비를 이어갑니다. blocked이면 이유를 알립니다. 저장 승인·체크포인트와 기존 파일 보호를 따르고 미확정 저장은 자동 재시도하거나 다음 쓰기로 이어가지 않습니다.\n7. draft_structure가 있으면 초안을 고쳐서 다시 생성할지 알립니다. 영수증의 분해본 저장 여부, 최종 HWPX 저장 여부, 역할 검증과 미지원 항목을 구분해 보고합니다. 실행 중에는 문서 전체의 서식·여백·쪽 수를 검증하지 않으며, 고정 복제된 목차는 샘플 내용이 남을 수 있음을 알리고 실제 한글에서 확인하도록 안내합니다.\n",
+    "hwpx-document-creation/ko": "새 문서를 작성하거나 기존 Markdown을 새 `.hwpx`로 내보낼 때 사용한다. 샘플 HWP/HWPX의 서식·문체를 따르라는 요청은 '한글 서식 재사용 작업' 절차(서식 준비 → 초안 저장 → 새 HWPX 생성)를 따른다. 그 절차의 도구가 요청 정의에 없을 때만 '보고서 양식 재사용' 절차를 따른다. 템플릿 목록의 첫 템플릿으로 대신하지 않고, 화면에 열린 샘플 문서를 편집하지 않는다. 기존 HWP/HWPX를 고치는 요청은 이 공정으로 바꾸지 않는다. `.hwp` 생성도 약속하지 않는다.\n\n## 조회와 Markdown 초안\n\n- 현재 노트·사용자가 지정한 경로/내용/템플릿을 보존한다. 사용자가 그 노트의 변환을 요청했으면 다시 쓰지 않고 그대로 내보낸다. 사용자가 자료 조사나 새 문서 작성을 요청했으면 지정된 노트는 근거·목차 참고이지 완성 초안이 아니다. 조사한 근거로 새 Markdown 초안을 쓰고 그 초안을 내보낸다. 초안이 필요하면 요청 범위 안에서 작성하고 `write_file`의 표준 승인 경로로 `.md`를 저장한다. 바이너리 파일에 일반 텍스트 쓰기를 쓰지 않는다.\n- `plg__md-to-hwpx__get_export_options`로 현재 템플릿과 출력 위치 규칙을 조회한다. 고정 파일명이나 모든 템플릿의 동일한 서식을 가정하지 않는다. 사용자가 템플릿을 지정했다면 조회 목록에서 확인하며 다시 선택시키지 않는다. 선택이 실제로 필요한 경우만 묻는다.\n- 헤딩 `#`~`######`의 H1~H6 대응, 표·콜아웃 등의 지원은 현재 템플릿/검사 결과를 우선한다. 개조식도 표준 Markdown 헤딩/목록을 쓰되 지원하지 않는 marker나 서식 보존을 보장하지 않는다.\n- `check_export`에 실제 제공된 스키마의 초안·템플릿을 넣어 marker·변환 적합성을 확인한다. 렌더 캡처/테마 템플릿 기능도 실제 조회 결과와 스키마가 제공할 때만 사용한다.\n\n## Plotly 차트가 있는 노트\n\n- Chart Hands `build_chart`가 `staticBlock`을 반환하고 현재 HWPX Exporter가 이를 지원하면, HWPX 자동 내보내기용 초안에는 그 데이터 전용 블록을 넣는다. 숫자·범례·단위를 원본과 대조하고 `check_export`의 정적 차트 개수와 렌더러 상태를 확인한다. 텍스트는 원문 문자 그대로 표시하며 HTML·수식으로 해석하지 않고 제어 문자는 지원하지 않는다. 이 점검은 실제 렌더링이 아니므로 저장 준비의 성공과 최종 파일을 확인한다. `staticBlock`이 없거나 렌더러가 없으면 지원된다고 가정하지 않는다.\n- Chart Hands가 렌더링하는 Markdown `plotly` 코드 블록은 HWPX Exporter의 일반 내보내기에서 이미지로 담을 수 있다. Chart Hands 활성화와 Exporter의 `Capture rendered blocks` 및 `Capture third-party renderers` 설정이 필요하며, 신뢰할 수 있는 노트에만 타사 렌더러 캡처를 켠다. 캡처가 꺼져 있으면 차트 이미지를 보장하지 않으며 코드 블록이 그대로 남을 수 있다. 차트를 미리 수동 이미지로 바꿔야 한다고 단정하지 않는다.\n- 현재 에이전트의 `export_note`는 타사 렌더러 캡처 대상 블록이 있는 경우 입력을 안전하게 고정할 수 없어 거절할 수 있다. 이 거절은 일반 내보내기의 Plotly 지원 부재를 뜻하지 않는다. 자동 내보내기가 거절되면 그 사실과 이유를 보고하고, 사용자가 Obsidian의 HWPX Exporter에서 위 설정을 확인한 뒤 직접 내보내도록 안내한다. 설정을 임의로 바꾸거나 캡처를 꺼서 차트가 포함된 결과라고 주장하지 않는다. 실제 HWPX의 차트·범례·축을 확인하기 전에는 출력 성공을 보장하지 않는다.\n\n## HWPX 생성: commit\n\n`export_note`는 읽기가 아니라 파일을 만드는 **commit** 효과다. 조회 2개가 보인다고 생성 가능한 것은 아니다. 도구가 없으면 설치/활성 → provider 탐색 → 현재 descriptor 승인 → host commitEffects → 대화 선택/정의 예산을 확인하도록 안내한다. 스위치를 대신 켜거나 승인 digest를 수정하지 않는다. 모든 도구를 `tools` 필수 목록으로 넣어 조회까지 막지 않는다. `allowed-tools`는 노출/권한 보장이 아니다.\n\n현재 요청 정의에 `plg__md-to-hwpx__export_note`가 있고 사용자가 내보내기를 요청했다면, 스키마에 맞게 Markdown `path`와 선택한 `template`을 전달한다. host의 호출별 승인 → write set checkpoint → commit 실행 → 디스크 readback을 따른다. 직접 callTool 우회나 일반 쓰기로 바이너리를 대신 생성하지 않는다.\n\n호출 종료만으로 생성 완료라고 말하지 않는다. host 구조화 결과의 적용 상태와 실제 경로/`written` 근거를 확인한다. 거절은 거절, 실패는 실패, 일부 적용·미확정은 그 상태로 보고한다. 미확정 저장은 자동 재호출하지 않고 저장 카드의 상태 확인과 사람 검토를 안내한다.\n\n완료 응답은 **Markdown 초안 상태**, **HWPX 실제 생성/경로**, **승인 대기·거절·부분 적용·미확정 및 남은 확인**을 구분한다.\n"
+  },
+  "sources": {
+    "hwp-format-reuse/ko": "ca1216abaa1ac24e34b5f2d077aeba26c66007196c7b5e086ae140bdf01e7375",
+    "hwpx-document-creation/ko": "8f3a0917ab2c068063635727f45853d83becd8103b8329362aa0412c62e80b11"
+  }
+}

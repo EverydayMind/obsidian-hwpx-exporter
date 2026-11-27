@@ -1,5 +1,6 @@
 import { readTemplateMode } from '../src/template-derive/templateMetadata';
-import { L, initLocale } from '../src/locale';
+import { L, getLocale, initLocale } from '../src/locale';
+import { agentSkillNames, hostSkillSupport } from './agentSkills';
 import { loadNoteTemplate, preferredTemplatePaths, assertVaultRealPath, hasNormalizedDiskPath, templateDerivedMode, TEMPLATE_MAX_BYTES, type TemplateLoaderHost } from './templateLoader';
 import type { InputDependency } from './deriveProvider';
 import * as fs from 'fs';
@@ -1216,6 +1217,17 @@ class HWPXExporterSettingTab extends PluginSettingTab {
         super(app, plugin);
     }
 
+    /** One plain status line: whether an AI host that reads plugin Skills is enabled. */
+    private hostSkillStatusText(): string {
+        const names = agentSkillNames(getLocale()).join(', ');
+        const list = names ? ` (${names})` : '';
+        switch (hostSkillSupport(this.app)) {
+            case 'supported': return L({ ko: `AI 호스트가 이 플러그인의 Skill${list}을 읽을 수 있습니다.`, en: `An AI host can read this plugin's Skills${list}.` });
+            case 'not_found': return L({ ko: `켜진 AI 호스트 중 플러그인 Skill을 읽는 것이 없습니다. Verbex를 쓰고 있다면 최신 판으로 업데이트하면 이 플러그인의 Skill${list}을 쓸 수 있습니다.`, en: `No enabled AI host reads plugin Skills. If you use Verbex, update it to use this plugin's Skills${list}.` });
+            default: return L({ ko: 'AI 호스트의 플러그인 Skill 지원 여부를 확인할 수 없습니다.', en: 'Could not check whether an AI host supports plugin Skills.' });
+        }
+    }
+
     /** Obsidian 1.13+: rendered declaratively and indexed for settings search. */
     getSettingDefinitions(): SettingDefinitionItem[] {
         return this.sections().map((section) => ({
@@ -1366,6 +1378,11 @@ class HWPXExporterSettingTab extends PluginSettingTab {
                         L({ ko: '같은 이름의 파일이 이미 있으면 덮어쓰지 않고 -1, -2 등을 붙입니다.', en: 'If the output file exists, append -1, -2, ... instead of overwriting it.' }),
                         'appendSequenceOnConflict'
                     ),
+                    {
+                        name: L({ ko: 'AI 호스트 Skill', en: 'AI host Skills' }),
+                        desc: this.hostSkillStatusText(),
+                        render: () => { /* status line only */ },
+                    },
                 ],
             },
             {
